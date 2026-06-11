@@ -74,6 +74,32 @@
   text-shadow: 0 4px 24px rgba(0,0,0,.45);
   opacity: 0; transition: opacity .25s; pointer-events: none;
 }
+/* Menu de sélection de circuit */
+#map-menu {
+  position: fixed; inset: 0; z-index: 40; display: none;
+  align-items: center; justify-content: center; flex-direction: column; gap: 16px;
+  background: rgba(12,16,34,.55); backdrop-filter: blur(5px); color: #fff;
+}
+#map-menu h2 { font-size: 34px; text-shadow: 0 3px 12px rgba(0,0,0,.4); }
+#map-menu .maps { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; padding: 0 20px; }
+.map-card {
+  width: 220px; padding: 18px 16px; border-radius: 16px; cursor: pointer;
+  background: rgba(28,35,70,.92); border: 2px solid rgba(255,255,255,.12);
+  text-align: center; transition: transform .12s, border-color .12s;
+}
+.map-card:hover { transform: translateY(-4px); border-color: #ffd02e; }
+.map-card .map-emoji { font-size: 44px; }
+.map-card h3 { font-size: 19px; margin: 6px 0 4px; }
+.map-card p { font-size: 12.5px; opacity: .8; line-height: 1.45; }
+.map-card .map-record { margin-top: 8px; font-size: 12px; color: #ffd02e; }
+#map-menu .menu-hint { font-size: 13px; opacity: .75; max-width: 520px; text-align: center; }
+#lobby-status {
+  position: fixed; z-index: 11; top: 20%; left: 50%; transform: translateX(-50%);
+  display: none; text-align: center; color: #fff;
+  background: rgba(20,25,45,.7); padding: 14px 30px; border-radius: 16px; backdrop-filter: blur(4px);
+}
+#lobby-status .lobby-title { font-size: 22px; font-weight: 700; }
+#lobby-status .lobby-sub { font-size: 14px; opacity: .88; margin-top: 5px; }
 </style>
 </head>
 <body>
@@ -93,11 +119,19 @@
 <div id="hud-controls" class="hud" style="display:none">
   <b>Z/↑</b> accélérer &nbsp; <b>S/↓</b> freiner / reculer<br>
   <b>Q/D ou ←/→</b> tourner &nbsp; <b>Espace</b> drift &nbsp; <b>R</b> respawn<br>
-  🏁 Roule dans le portail <b>Course classique</b> pour lancer une course &nbsp; <b>Échap</b> abandonner
+  🏁 Portail <b>Course classique</b> : choisis ton circuit &nbsp; 🌉 Le pont derrière mène à l'île des circuits<br>
+  En course : <b>Échap</b> quitter / abandonner
 </div>
 <div id="toast" class="hud"></div>
 <div id="hud-race" style="display:none"></div>
 <div id="countdown"></div>
+
+<div id="map-menu">
+  <h2>🏁 Choisis ton circuit</h2>
+  <div class="maps" id="map-cards"></div>
+  <div class="menu-hint">Échap pour annuler — tu peux aussi emprunter le pont derrière le portail pour explorer l'île des circuits librement.</div>
+</div>
+<div id="lobby-status"></div>
 
 <canvas id="game-canvas"></canvas>
 
@@ -309,6 +343,88 @@ function box(w, h, d, color, x = 0, y = 0, z = 0, shadow = true) {
   grass.position.y = 0.01;
   grass.receiveShadow = true;
   scene.add(grass);
+}
+
+// ---------- Île des circuits + pont (Phase 3) ----------
+const BRIDGE_DIR = { x: Math.cos(Math.PI / 5), z: Math.sin(Math.PI / 5) }; // axe du portail Course
+const RACE_ISLAND = { x: BRIDGE_DIR.x * 225, z: BRIDGE_DIR.z * 225, r: 100 };
+const BRIDGE = { from: 88, to: 130, w: 12 };
+function isOnLand(x, z) {
+  if (Math.hypot(x, z) <= ISLAND_RADIUS - 2) return true;
+  if (Math.hypot(x - RACE_ISLAND.x, z - RACE_ISLAND.z) <= RACE_ISLAND.r - 2) return true;
+  const s = x * BRIDGE_DIR.x + z * BRIDGE_DIR.z;
+  const lat = -x * BRIDGE_DIR.z + z * BRIDGE_DIR.x;
+  return s >= BRIDGE.from - 6 && s <= BRIDGE.to + 6 && Math.abs(lat) <= BRIDGE.w / 2 - 1;
+}
+{
+  const bridgeYaw = Math.atan2(BRIDGE_DIR.x, BRIDGE_DIR.z);
+  // Île des circuits (au bout du pont)
+  const island2 = new THREE.Mesh(new THREE.CylinderGeometry(RACE_ISLAND.r, RACE_ISLAND.r + 8, 6, 64), mat(0x7ec850));
+  island2.position.set(RACE_ISLAND.x, -3, RACE_ISLAND.z);
+  island2.receiveShadow = true;
+  const beach2 = new THREE.Mesh(new THREE.CylinderGeometry(RACE_ISLAND.r + 8, RACE_ISLAND.r + 14, 2.5, 64), mat(0xf0dca0));
+  beach2.position.set(RACE_ISLAND.x, -5.2, RACE_ISLAND.z);
+  const grass2 = new THREE.Mesh(new THREE.CircleGeometry(RACE_ISLAND.r, 64), mat(0x79c24a, 0.95));
+  grass2.rotation.x = -Math.PI / 2;
+  grass2.position.set(RACE_ISLAND.x, 0.01, RACE_ISLAND.z);
+  grass2.receiveShadow = true;
+  scene.add(island2, beach2, grass2);
+  // Pont en bois : tablier + rambardes + piliers
+  const bridgeMid = (BRIDGE.from + BRIDGE.to) / 2;
+  const bridgeLen = BRIDGE.to - BRIDGE.from;
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(BRIDGE.w, 1.2, bridgeLen + 10), mat(0x8a6a48, 0.85));
+  deck.position.set(BRIDGE_DIR.x * bridgeMid, -0.58, BRIDGE_DIR.z * bridgeMid);
+  deck.rotation.y = bridgeYaw;
+  deck.receiveShadow = true;
+  scene.add(deck);
+  for (const side of [-1, 1]) {
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.0, bridgeLen + 10), mat(0x6e4a33, 0.8));
+    rail.position.set(
+      BRIDGE_DIR.x * bridgeMid - BRIDGE_DIR.z * side * (BRIDGE.w / 2 - 0.3),
+      0.5,
+      BRIDGE_DIR.z * bridgeMid + BRIDGE_DIR.x * side * (BRIDGE.w / 2 - 0.3));
+    rail.rotation.y = bridgeYaw;
+    rail.castShadow = true;
+    scene.add(rail);
+  }
+  for (let i = 0; i < 3; i++) {
+    const s = BRIDGE.from + 7 + i * (bridgeLen - 14) / 2;
+    const pile = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.6, 6.5, 10), mat(0x75809a, 0.9));
+    pile.position.set(BRIDGE_DIR.x * s, -3.2, BRIDGE_DIR.z * s);
+    scene.add(pile);
+  }
+  // Panneau flottant à l'entrée du pont
+  const signTex = makeTextTexture('🌉 Île des circuits', '#ffffff', 512, 96, 42, 'rgba(20,25,45,0.7)');
+  const signMesh = new THREE.Mesh(new THREE.PlaneGeometry(9, 1.8), new THREE.MeshBasicMaterial({ map: signTex, transparent: true, side: THREE.DoubleSide }));
+  signMesh.position.set(BRIDGE_DIR.x * (BRIDGE.from + 2), 5, BRIDGE_DIR.z * (BRIDGE.from + 2));
+  signMesh.rotation.y = bridgeYaw;
+  scene.add(signMesh);
+  animatedProps.push({ update(t) { signMesh.position.y = 5 + Math.sin(t * 1.6) * 0.2; } });
+  // Décor : arbres entre les deux pistes + rochers au centre
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2 + 0.4;
+    const r = 61 + (i % 2) * 5;
+    const x = RACE_ISLAND.x + Math.cos(a) * r, z = RACE_ISLAND.z + Math.sin(a) * r;
+    const lat = -x * BRIDGE_DIR.z + z * BRIDGE_DIR.x;
+    const s = x * BRIDGE_DIR.x + z * BRIDGE_DIR.z;
+    if (Math.abs(lat) < 10 && s > BRIDGE.from) continue; // pas sur la route d'accès
+    const trunk = box(0.9, 3, 0.9, 0x8a5a2b, x, 1.5, z);
+    const leaves = new THREE.Mesh(new THREE.IcosahedronGeometry(2.6, 0), mat(0x3f9e4d));
+    leaves.position.set(x, 4.6, z);
+    leaves.castShadow = true;
+    scene.add(trunk, leaves);
+    WORLD.colliders.push({ x, z, r: 1.2 });
+  }
+  for (let i = 0; i < 6; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.random() * 16;
+    const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(0.8 + Math.random() * 1.1, 0), mat(0x9aa0ab, 0.95));
+    rock.position.set(RACE_ISLAND.x + Math.cos(a) * r, 0.4, RACE_ISLAND.z + Math.sin(a) * r);
+    rock.rotation.set(Math.random(), Math.random(), Math.random());
+    rock.castShadow = rock.receiveShadow = true;
+    scene.add(rock);
+    WORLD.colliders.push({ x: rock.position.x, z: rock.position.z, r: 1.2 });
+  }
 }
 
 // ---------- Nuages (dérive lente autour de l'île) ----------
@@ -1010,13 +1126,13 @@ let driftAmount = 0;
 let carPitch = 0; // tangage (pentes + sauts)
 
 function updateCar(dt) {
-  const lock = race.locked; // inputs bloqués pendant compte à rebours / arrivée
+  const lock = race.locked || menuOpen; // inputs bloqués (course / menu de circuits)
   const up = !lock && (keys['KeyW'] || keys['KeyZ'] || keys['ArrowUp']);
   const down = !lock && (keys['KeyS'] || keys['ArrowDown']);
   const left = !lock && (keys['KeyA'] || keys['KeyQ'] || keys['ArrowLeft']);
   const right = !lock && (keys['KeyD'] || keys['ArrowRight']);
   const drifting = !lock && keys['Space'];
-  if (keys['KeyR']) {
+  if (keys['KeyR'] && !menuOpen) {
     if (race.state === 'running') raceRespawn();
     else if (!race.state) respawn();
   }
@@ -1044,17 +1160,17 @@ function updateCar(dt) {
   driftAmount = (1 - Math.abs(velDir.dot(forward))) * car.vel.length();
 
   // Déplacement
+  const prevX = car.pos.x, prevZ = car.pos.z;
   car.pos.x += car.vel.x * dt;
   car.pos.z += car.vel.y * dt;
 
-  // Bord de l'île
-  const distCenter = Math.hypot(car.pos.x, car.pos.z);
-  if (distCenter > ISLAND_RADIUS - 2) {
-    const nx = car.pos.x / distCenter, nz = car.pos.z / distCenter;
-    car.pos.x = nx * (ISLAND_RADIUS - 2);
-    car.pos.z = nz * (ISLAND_RADIUS - 2);
-    const dot = car.vel.x * nx + car.vel.y * nz;
-    if (dot > 0) { car.vel.x -= nx * dot * 1.4; car.vel.y -= nz * dot * 1.4; car.speed *= 0.55; spawnSparks(); }
+  // Bord des îles et du pont : rebond pour ne pas tomber dans l'eau
+  if (!isOnLand(car.pos.x, car.pos.z)) {
+    car.pos.x = prevX;
+    car.pos.z = prevZ;
+    car.vel.multiplyScalar(-0.35);
+    car.speed *= -0.35;
+    spawnSparks();
   }
 
   // Colliders (portails, arbres, boutique, fontaine...) — ignorés en plein saut
@@ -1067,6 +1183,28 @@ function updateCar(dt) {
       car.pos.z = c.z + nz * min;
       const dot = car.vel.x * nx + car.vel.y * nz;
       if (dot < 0) { car.vel.x -= nx * dot * 1.5; car.vel.y -= nz * dot * 1.5; car.speed *= 0.5; spawnSparks(); }
+    }
+  }
+
+  // Collisions entre joueurs : chaque client résout sa propre voiture,
+  // les deux se poussent donc mutuellement (effet tamponnage)
+  if (car.y <= 2.5 && race.state !== 'waiting' && race.state !== 'countdown') {
+    for (const r of remotePlayers.values()) {
+      const g = r.group.position;
+      if (Math.abs((g.y || 0) - car.y) > 2.2) continue;
+      const dx = car.pos.x - g.x, dz = car.pos.z - g.z;
+      const d = Math.hypot(dx, dz), min = 2.7;
+      if (d < min && d > 0.001) {
+        const nx = dx / d, nz = dz / d;
+        car.pos.x = g.x + nx * min;
+        car.pos.z = g.z + nz * min;
+        const dot = car.vel.x * nx + car.vel.y * nz;
+        if (dot < 0) { car.vel.x -= nx * dot * 1.4; car.vel.y -= nz * dot * 1.4; }
+        car.vel.x += nx * 3;
+        car.vel.y += nz * 3;
+        car.speed *= 0.85;
+        if (Math.abs(car.speed) > 8) spawnSparks();
+      }
     }
   }
 
@@ -1204,7 +1342,7 @@ function updateCoins(dt, now) {
 // ---------- Zones : portails + boutique ----------
 let lastZone = null;
 function updateZones() {
-  if (race.state) { lastZone = null; return; } // pas de portails pendant une course
+  if (race.state || menuOpen) { lastZone = null; return; } // pas de portails pendant une course / le menu
   let zone = null;
   for (const p of portalZones) {
     if (Math.hypot(car.pos.x - p.x, car.pos.z - p.z) < p.r) { zone = p.name; break; }
@@ -1212,7 +1350,7 @@ function updateZones() {
   if (!zone && Math.hypot(car.pos.x - SHOP.x, car.pos.z - (SHOP.z + 8)) < 6) zone = '🛒 Boutique';
   if (zone && zone !== lastZone) {
     if (zone === PORTALS[0].name) {
-      if (performance.now() > race.cooldownUntil) startRace();
+      if (performance.now() > race.cooldownUntil) openMapMenu();
     } else {
       toast(zone.startsWith('🛒')
         ? '🛒 Boutique — disponible en Phase 4 !'
@@ -1222,27 +1360,107 @@ function updateZones() {
   lastZone = zone;
 }
 
-/* ---------- Mini-jeu 1 : Course classique (Phase 3) ----------
-   - Déclenchée en roulant dans le portail 🏁
-   - 3 tours du circuit (ligne médiane de la route, r=44), 8 checkpoints
-   - Compte à rebours 3-2-1, chrono, record local, classement temps réel
-   - Zone réseau dédiée : zones/course/players */
-const RACE = { laps: 3, radius: 44, checkpoints: 8, startAngle: Math.PI / 5, detect: 8 };
+/* ---------- Mini-jeu 1 : Courses (Phase 3) ----------
+   - Portail 🏁 : menu de sélection parmi 3 circuits
+   - Lobby : chaque joueur appuie sur une touche pour se déclarer prêt,
+     le départ est donné quand tout le monde est prêt
+   - Compte à rebours, chrono, record local par circuit, classement temps réel
+   - Une zone réseau par circuit : zones/course_<id>/players */
+function circuitPoints(cx, cz, n, phase, radiusFn) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = phase + (i / n) * Math.PI * 2;
+    const r = radiusFn(a);
+    pts.push({ x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r });
+  }
+  return pts;
+}
+function withHeadings(cps) {
+  for (let i = 0; i < cps.length; i++) {
+    const nxt = cps[(i + 1) % cps.length];
+    cps[i].h = Math.atan2(nxt.x - cps[i].x, nxt.z - cps[i].z);
+  }
+  return cps;
+}
+const MAPS = [
+  {
+    id: 'anneau', emoji: '🏁', name: 'Anneau du Hub', laps: 3, detect: 8,
+    desc: 'Le circuit historique autour du spawn. Simple et rapide, parfait pour débuter.',
+    cps: withHeadings(circuitPoints(0, 0, 8, Math.PI / 5, () => 44)),
+  },
+  {
+    id: 'grand', emoji: '🌄', name: 'Grand Circuit', laps: 3, detect: 9,
+    desc: "Large anneau sur l'île des circuits, au bout du pont. Vitesse pure.",
+    cps: withHeadings(circuitPoints(RACE_ISLAND.x, RACE_ISLAND.z, 10, Math.PI / 5 + Math.PI, () => 78)),
+  },
+  {
+    id: 'serpent', emoji: '🐍', name: 'Le Serpent', laps: 2, detect: 8,
+    desc: "Circuit sinueux sur l'île des circuits : enchaîne les virages sans sortir de la piste.",
+    cps: withHeadings(circuitPoints(RACE_ISLAND.x, RACE_ISLAND.z, 12, 0, a => 40 + 12 * Math.sin(3 * a))),
+  },
+];
 const race = {
-  state: null,          // null | 'countdown' | 'running' | 'finished'
+  state: null,          // null | 'waiting' | 'countdown' | 'running' | 'finished'
+  map: null, slot: -1, ready: false,
   lap: 1, next: 1,
   t0: 0, time: 0, finishTime: 0,
   countdownEnd: 0, cooldownUntil: 0,
   locked: false,
 };
-const raceCpPos = [];
-for (let i = 0; i < RACE.checkpoints; i++) {
-  const a = RACE.startAngle + (i / RACE.checkpoints) * Math.PI * 2;
-  raceCpPos.push({ a, x: Math.cos(a) * RACE.radius, z: Math.sin(a) * RACE.radius });
+const bestTimes = {};
+for (const mDef of MAPS) {
+  bestTimes[mDef.id] = Number(localStorage.getItem('rogames_best_' + mDef.id)
+    || (mDef.id === 'anneau' ? localStorage.getItem('rogames_best_course') || 0 : 0));
 }
-let bestRaceTime = Number(localStorage.getItem('rogames_best_course') || 0);
+let menuOpen = false;
 const raceHudEl = document.getElementById('hud-race');
 const countdownEl = document.getElementById('countdown');
+const mapMenuEl = document.getElementById('map-menu');
+const mapCardsEl = document.getElementById('map-cards');
+const lobbyEl = document.getElementById('lobby-status');
+let startLineGroup = null;
+function placeStartLine(map) {
+  const c0 = map.cps[0];
+  startLineGroup.position.set(c0.x, 0, c0.z);
+  startLineGroup.rotation.y = c0.h;
+}
+
+// Routes des circuits de l'île : rubans plats générés le long des tracés
+function buildRoadRibbon(pts, width) {
+  const N = pts.length;
+  const verts = [], idx = [];
+  for (let i = 0; i < N; i++) {
+    const p = pts[i], q = pts[(i + 1) % N], o = pts[(i - 1 + N) % N];
+    let dx = q.x - o.x, dz = q.z - o.z;
+    const l = Math.hypot(dx, dz) || 1;
+    dx /= l; dz /= l;
+    const nx = -dz, nz = dx;
+    verts.push(p.x + nx * width / 2, 0.025, p.z + nz * width / 2);
+    verts.push(p.x - nx * width / 2, 0.025, p.z - nz * width / 2);
+  }
+  for (let i = 0; i < N; i++) {
+    const a = i * 2, b = i * 2 + 1, c = ((i + 1) % N) * 2, d = ((i + 1) % N) * 2 + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x4a4a55, roughness: 0.95, side: THREE.DoubleSide }));
+  m.receiveShadow = true;
+  return m;
+}
+{
+  scene.add(buildRoadRibbon(circuitPoints(RACE_ISLAND.x, RACE_ISLAND.z, 96, 0, () => 78), 14));
+  scene.add(buildRoadRibbon(circuitPoints(RACE_ISLAND.x, RACE_ISLAND.z, 160, 0, a => 40 + 12 * Math.sin(3 * a)), 10));
+  // Route d'accès : du bout du pont jusqu'au Grand Circuit
+  const acc = new THREE.Mesh(new THREE.PlaneGeometry(12, 30), new THREE.MeshStandardMaterial({ color: 0x4a4a55, roughness: 0.95 }));
+  acc.rotation.order = 'YXZ';
+  acc.rotation.set(-Math.PI / 2, Math.atan2(BRIDGE_DIR.x, BRIDGE_DIR.z), 0);
+  acc.position.set(BRIDGE_DIR.x * 139, 0.028, BRIDGE_DIR.z * 139);
+  acc.receiveShadow = true;
+  scene.add(acc);
+}
 
 // Ligne de départ/arrivée en damier (toujours visible sur la route)
 {
@@ -1267,18 +1485,18 @@ const countdownEl = document.getElementById('countdown');
   label.scale.set(9, 1.7, 1);
   label.position.y = 5.4;
   lineGroup.add(label);
-  const s0 = raceCpPos[0];
-  lineGroup.position.set(s0.x, 0, s0.z);
-  lineGroup.rotation.y = -s0.a;
+  startLineGroup = lineGroup;
   scene.add(lineGroup);
+  placeStartLine(MAPS[0]);
   animatedProps.push({ update: t => { label.position.y = 5.4 + Math.sin(t * 1.4) * 0.25; } });
 }
 
 // Portiques de checkpoints (visibles uniquement pendant la course)
 const gateMatOff = new THREE.MeshStandardMaterial({ color: 0x6cd2ff, transparent: true, opacity: 0.35, roughness: 0.4 });
 const gateMatOn = new THREE.MeshStandardMaterial({ color: 0xffd02e, transparent: true, opacity: 0.9, roughness: 0.3, emissive: 0xffd02e, emissiveIntensity: 0.35 });
+const MAX_CPS = 12;
 const raceGates = [];
-for (const c of raceCpPos) {
+for (let i = 0; i < MAX_CPS; i++) {
   const g = new THREE.Group();
   for (const sx of [-5.6, 5.6]) {
     const pylon = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.3, 2.6, 8), mat(0xe8edf6, 0.5, 0.2));
@@ -1288,11 +1506,21 @@ for (const c of raceCpPos) {
   const ring = new THREE.Mesh(new THREE.TorusGeometry(2.4, 0.24, 8, 26), gateMatOff);
   ring.position.y = 3.6;
   g.add(ring);
-  g.position.set(c.x, 0, c.z);
-  g.rotation.y = -c.a;
   g.visible = false;
   scene.add(g);
   raceGates.push({ group: g, ring });
+}
+// Positionne les portiques sur les checkpoints du circuit choisi
+function placeGates(map) {
+  for (let i = 0; i < raceGates.length; i++) {
+    const g = raceGates[i];
+    const c = map.cps[i];
+    if (c) {
+      g.group.position.set(c.x, 0, c.z);
+      g.group.rotation.y = c.h;
+    }
+    g.group.visible = !!c;
+  }
 }
 
 function fmtTime(t) {
@@ -1303,22 +1531,26 @@ function fmtTime(t) {
 
 // Progression continue : checkpoints passés + fraction vers le prochain
 function raceProgress() {
-  const passed = (race.lap - 1) * RACE.checkpoints + (race.next === 0 ? RACE.checkpoints - 1 : race.next - 1);
-  const c = raceCpPos[race.next];
+  if (!race.map) return 0;
+  const cps = race.map.cps, n = cps.length;
+  const passed = (race.lap - 1) * n + (race.next === 0 ? n - 1 : race.next - 1);
+  const c = cps[race.next];
+  const p = cps[(race.next - 1 + n) % n];
+  const seg = Math.hypot(c.x - p.x, c.z - p.z);
   const dist = Math.hypot(car.pos.x - c.x, car.pos.z - c.z);
-  const seg = (Math.PI * 2 * RACE.radius) / RACE.checkpoints;
   const frac = THREE.MathUtils.clamp(1 - dist / seg, 0, 0.95);
   return passed + frac;
 }
 
-// Classement en temps réel face aux autres joueurs de la zone course
+// Classement en temps réel face aux autres joueurs du même circuit
 function racePosition() {
   let pos = 1, total = 1;
   const myFin = race.finishTime || 0;
   const myProg = raceProgress();
   for (const r of remotePlayers.values()) {
     const rr = r.data && r.data.race;
-    if (!rr) continue;
+    if (!rr || !race.map || rr.map !== race.map.id) continue;
+    if (rr.st === 'w' || rr.st === 'c') continue; // pas encore en course
     total++;
     if (myFin) {
       if (rr.fin && rr.fin < myFin) pos++;
@@ -1329,28 +1561,110 @@ function racePosition() {
   return { pos, total };
 }
 
-function startRace() {
-  race.state = 'countdown';
+// Lobby : compte qui attend / qui est prêt sur ce circuit
+function lobbyCounts() {
+  let total = 1, ready = race.ready ? 1 : 0;
+  for (const r of remotePlayers.values()) {
+    const rr = r.data && r.data.race;
+    if (!rr || rr.map !== race.map.id) continue;
+    if (rr.st !== 'w' && rr.st !== 'c') continue;
+    total++;
+    if (rr.rdy) ready++;
+  }
+  return { total, ready };
+}
+
+function gridSlot() {
+  const me = myId || 'moi';
+  const ids = [me];
+  for (const [uid, r] of remotePlayers) {
+    const rr = r.data && r.data.race;
+    if (rr && rr.map === race.map.id && (rr.st === 'w' || rr.st === 'c')) ids.push(uid);
+  }
+  ids.sort();
+  return ids.indexOf(me);
+}
+
+// Place le kart sur la grille de départ (2 colonnes)
+function placeCarOnGrid() {
+  const c0 = race.map.cps[0];
+  const i = Math.max(gridSlot(), 0);
+  const row = Math.floor(i / 2), col = i % 2 === 0 ? -1 : 1;
+  const fx = Math.sin(c0.h), fz = Math.cos(c0.h);
+  const sx = fz, sz = -fx;
+  car.pos.set(
+    c0.x - fx * (3.5 + row * 4.5) + sx * col * 2.7,
+    0,
+    c0.z - fz * (3.5 + row * 4.5) + sz * col * 2.7);
+  car.heading = c0.h;
+  car.vel.set(0, 0); car.speed = 0; car.y = 0; car.vy = 0; car.grounded = true;
+}
+
+// Menu de sélection de circuit (ouvert par le portail 🏁)
+function openMapMenu() {
+  menuOpen = true;
+  car.vel.set(0, 0); car.speed = 0;
+  mapCardsEl.innerHTML = '';
+  for (const m of MAPS) {
+    const card = document.createElement('div');
+    card.className = 'map-card';
+    card.innerHTML =
+      `<div class="map-emoji">${m.emoji}</div><h3>${m.name}</h3><p>${m.desc}</p>` +
+      `<p>${m.laps} tours · ${m.cps.length} checkpoints</p>` +
+      `<div class="map-record">${bestTimes[m.id] ? '🏆 Record : ' + fmtTime(bestTimes[m.id]) : 'Aucun record'}</div>`;
+    card.addEventListener('click', () => { closeMapMenu(); joinLobby(m); });
+    mapCardsEl.appendChild(card);
+  }
+  mapMenuEl.style.display = 'flex';
+}
+function closeMapMenu() {
+  menuOpen = false;
+  mapMenuEl.style.display = 'none';
+  race.cooldownUntil = performance.now() + 3000;
+}
+
+// Rejoint le lobby d'un circuit : grille de départ + attente que tout le monde soit prêt
+function joinLobby(map) {
+  race.state = 'waiting';
+  race.map = map;
+  race.slot = -1;
+  race.ready = false;
   race.lap = 1; race.next = 1;
   race.time = 0; race.finishTime = 0;
   race.locked = true;
-  race.countdownEnd = performance.now() + 3300;
-  const s0 = raceCpPos[0];
-  car.pos.set(s0.x, 0, s0.z);
-  car.heading = -s0.a;
-  car.vel.set(0, 0); car.speed = 0; car.y = 0; car.vy = 0; car.grounded = true;
-  for (const g of raceGates) g.group.visible = true;
+  placeGates(map);
+  placeStartLine(map);
+  placeCarOnGrid();
   raceHudEl.style.display = '';
+  lobbyEl.style.display = 'block';
+  updateLobbyStatus(race.ready ? 1 : 0, 1);
   updateRaceHud();
-  net.switchZone('course');
-  toast('🏁 Course classique — 3 tours !', 2200);
+  net.switchZone('course_' + map.id);
+  toast(`${map.emoji} ${map.name} — appuie sur une touche quand tu es prêt !`, 3000);
+}
+
+function startCountdown() {
+  race.state = 'countdown';
+  race.countdownEnd = performance.now() + 3300;
+  lobbyEl.style.display = 'none';
+  placeCarOnGrid();
+  toast(`${race.map.emoji} ${race.map.name} — ${race.map.laps} tours !`, 2200);
+}
+
+function updateLobbyStatus(ready, total) {
+  if (!race.map) return;
+  lobbyEl.innerHTML =
+    `<div class="lobby-title">${race.map.emoji} ${race.map.name}</div>` +
+    `<div class="lobby-sub">${race.ready ? '✅ Prêt ! En attente des autres joueurs…' : 'Appuie sur <b>Z / Q / S / D</b> quand tu es prêt'}</div>` +
+    `<div class="lobby-sub">${ready}/${total} joueur${total > 1 ? 's' : ''} prêt${ready > 1 ? 's' : ''} — départ quand tout le monde est prêt · <b>Échap</b> quitter</div>`;
 }
 
 function raceRespawn() {
-  const idx = (race.next + RACE.checkpoints - 1) % RACE.checkpoints;
-  const c = raceCpPos[idx];
+  const cps = race.map.cps;
+  const idx = (race.next + cps.length - 1) % cps.length;
+  const c = cps[idx];
   car.pos.set(c.x, 0, c.z);
-  car.heading = -c.a;
+  car.heading = c.h;
   car.vel.set(0, 0); car.speed = 0; car.y = 0; car.vy = 0; car.grounded = true;
 }
 
@@ -1360,396 +1674,4 @@ function finishRace() {
   race.locked = true;
   const { pos, total } = racePosition();
   let reward = 40;
-  if (total > 1) reward += pos === 1 ? 30 : pos === 2 ? 15 : 5;
-  let recordTxt = '';
-  if (!bestRaceTime || race.time < bestRaceTime) {
-    bestRaceTime = race.time;
-    localStorage.setItem('rogames_best_course', bestRaceTime);
-    reward += 20;
-    recordTxt = ' · 🏆 Nouveau record !';
-  }
-  coinTotal += reward;
-  coinCountEl.textContent = coinTotal;
-  localStorage.setItem('rogames_coins', coinTotal);
-  const posTxt = pos === 1 ? '1ᵉʳ' : `${pos}ᵉ`;
-  toast(`🏁 Arrivée ! ${posTxt}/${total} en ${fmtTime(race.time)} — +${reward} 🪙${recordTxt}`, 5200);
-  updateRaceHud();
-  setTimeout(endRace, 5400);
-}
-
-function endRace() {
-  race.state = null;
-  race.locked = false;
-  race.cooldownUntil = performance.now() + 4000;
-  for (const g of raceGates) { g.group.visible = false; g.ring.material = gateMatOff; g.ring.scale.set(1, 1, 1); }
-  raceHudEl.style.display = 'none';
-  countdownEl.style.opacity = 0;
-  respawn();
-  net.switchZone('hub');
-}
-
-function updateRaceHud() {
-  const { pos, total } = racePosition();
-  const posTxt = total > 1 ? ` &nbsp;·&nbsp; ${pos === 1 ? '1ᵉʳ' : pos + 'ᵉ'}/${total}` : '';
-  const record = bestRaceTime ? ` &nbsp;·&nbsp; Record ${fmtTime(bestRaceTime)}` : '';
-  raceHudEl.innerHTML =
-    `<div class="race-time">⏱ ${fmtTime(race.state === 'finished' ? race.finishTime : race.time)}</div>` +
-    `<div class="race-sub">Tour ${Math.min(race.lap, RACE.laps)}/${RACE.laps}${posTxt}</div>` +
-    `<div class="race-sub">🏁 Course classique${record}</div>`;
-}
-
-function updateRace(dt) {
-  if (!race.state) return;
-  const now = performance.now();
-  if (race.state === 'countdown') {
-    const remain = race.countdownEnd - now;
-    if (remain > 0) {
-      countdownEl.textContent = Math.min(3, Math.ceil(remain / 1000));
-      countdownEl.style.opacity = 1;
-    } else {
-      countdownEl.style.opacity = 0;
-      race.state = 'running';
-      race.locked = false;
-      race.t0 = now;
-      toast('GO ! 🚦', 900);
-    }
-  } else if (race.state === 'running') {
-    race.time = (now - race.t0) / 1000;
-    const c = raceCpPos[race.next];
-    if (Math.hypot(car.pos.x - c.x, car.pos.z - c.z) < RACE.detect) {
-      if (race.next === 0) {
-        if (race.lap >= RACE.laps) {
-          finishRace();
-        } else {
-          race.lap++; race.next = 1;
-          toast(`Tour ${race.lap}/${RACE.laps} ! 🏎️`, 1500);
-        }
-      } else {
-        race.next = (race.next + 1) % RACE.checkpoints;
-      }
-    }
-  }
-  // Anneau actif en surbrillance pulsante
-  for (let i = 0; i < raceGates.length; i++) {
-    const active = race.state === 'running' && i === race.next;
-    raceGates[i].ring.material = active ? gateMatOn : gateMatOff;
-    const s = active ? 1 + Math.sin(now / 160) * 0.09 : 1;
-    raceGates[i].ring.scale.set(s, s, s);
-  }
-  updateRaceHud();
-}
-
-window.addEventListener('keydown', e => {
-  if (e.code === 'Escape' && race.state && race.state !== 'finished') {
-    toast('Course abandonnée 🏳️', 1800);
-    endRace();
-  }
-});
-
-// ---------- Caméra 3e personne ----------
-const camPos = new THREE.Vector3(0, 8, 30);
-const _camTarget = new THREE.Vector3();
-function updateCamera(dt) {
-  const back = 7.5 + (Math.abs(car.speed) / PHYS.maxSpeed) * 3.5; // recul selon vitesse
-  const driftYaw = THREE.MathUtils.clamp(driftAmount * 0.012, -0.25, 0.25);
-  const a = car.heading + Math.PI + driftYaw;
-  _camTarget.set(
-    car.pos.x + Math.sin(a) * back,
-    car.y * 0.85 + 4.2 + (Math.abs(car.speed) / PHYS.maxSpeed) * 1.2,
-    car.pos.z + Math.cos(a) * back
-  );
-  camPos.lerp(_camTarget, 1 - Math.exp(-5 * dt));
-  camera.position.copy(camPos);
-  camera.lookAt(car.pos.x, car.y + 1.6, car.pos.z);
-}
-
-// ---------- HUD ----------
-const toastEl = document.getElementById('toast');
-let toastTimer = null;
-function toast(msg, ms = 1200) {
-  toastEl.textContent = msg;
-  toastEl.style.opacity = 1;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { toastEl.style.opacity = 0; }, ms);
-}
-const speedEl = document.getElementById('hud-speed');
-
-// ---------- Texture texte utilitaire ----------
-function makeTextTexture(text, color, w, h, fontSize, bg) {
-  const cv = document.createElement('canvas');
-  cv.width = w; cv.height = h;
-  const ctx = cv.getContext('2d');
-  if (bg) {
-    ctx.fillStyle = bg;
-    ctx.beginPath();
-    ctx.roundRect(0, 0, w, h, 22);
-    ctx.fill();
-  }
-  ctx.font = `bold ${fontSize}px 'Segoe UI', Arial, sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = color;
-  ctx.fillText(text, w / 2, h / 2 + 2);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
-// ---------- Animations d'ambiance ----------
-function updateAmbient(dt, t) {
-  // Nuages : dérive lente + flottement
-  for (const c of clouds) {
-    c.angle += c.speed * dt;
-    c.group.position.set(Math.cos(c.angle) * c.radius, c.height + Math.sin(t * 0.5 + c.bob) * 1.2, Math.sin(c.angle) * c.radius);
-  }
-  // Fontaine : jet pulsant + eau frémissante
-  if (fountainJet) {
-    fountainJet.scale.y = 1 + Math.sin(t * 3.2) * 0.12;
-    fountainJet.position.y = 3.4 + Math.sin(t * 3.2) * 0.25;
-  }
-  if (fountainWater) fountainWater.position.y = 1.15 + Math.sin(t * 2.1) * 0.05;
-  // Halo du soleil qui respire
-  if (sunGlow) {
-    const s = 120 + Math.sin(t * 0.8) * 6;
-    sunGlow.scale.set(s, s, 1);
-  }
-  // Oiseaux : cercles + montées/descentes amples
-  for (const b of birds) {
-    b.angle += b.speed * dt;
-    const yB = b.height + Math.sin(t * b.driftSpeed + b.flap) * b.drift + Math.sin(t + b.flap) * 1.2;
-    b.group.position.set(Math.cos(b.angle) * b.radius, yB, Math.sin(b.angle) * b.radius);
-    b.group.rotation.y = -b.angle;
-    const f = Math.sin(t * 9 + b.flap) * 0.55;
-    b.wingL.rotation.z = f;
-    b.wingR.rotation.z = -f;
-  }
-  // Props des portails : halos, drapeau, fusée, loup, orbes, étoile...
-  for (const p of animatedProps) p.update(t);
-}
-
-/* ---------- Module réseau (Phase 2 — Firebase) ----------
-   - Auth anonyme + pseudo
-   - Sync position/rotation/vitesse ~12 fois/seconde
-   - Présence automatique (onDisconnect) — retire les déconnectés
-   - Interpolation des autres joueurs (mouvement lisse)
-   - Un canal par zone : zones/hub/players (course, arène... en Phase 3) */
-const firebaseConfig = {
-  apiKey: "AIzaSyCaof7m4LAzzZMEN8aSca_Uxl2LTf2Zq3Y",
-  authDomain: "rocars-4e5b1.firebaseapp.com",
-  databaseURL: "https://rocars-4e5b1-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "rocars-4e5b1",
-  storageBucket: "rocars-4e5b1.firebasestorage.app",
-  messagingSenderId: "772493979421",
-  appId: "1:772493979421:web:7d1895968adbf5797bbbf4",
-  measurementId: "G-0EE5GV3MFB",
-};
-
-const ZONE = 'hub';
-const PUBLISH_INTERVAL = 0.08; // ~12 envois/seconde
-const REMOTE_COLORS = [0x3498db, 0x2ecc71, 0xf2b632, 0x9b59f5, 0xff9f1a, 0x1abc9c, 0xe06b9a];
-let myUid = null, myId = null, myPseudo = 'Joueur', playerRef = null, publishTimer = 0;
-let netDb = null;            // base RTDB une fois connecté
-let currentZone = ZONE;      // zone réseau active (hub / course)
-let zoneUnsubs = [];         // listeners à détacher en changeant de zone
-const remotePlayers = new Map(); // uid -> { group, prev, target, t }
-
-function colorForUid(uid) {
-  let h = 0;
-  for (let i = 0; i < uid.length; i++) h = (h * 31 + uid.charCodeAt(i)) >>> 0;
-  return REMOTE_COLORS[h % REMOTE_COLORS.length];
-}
-
-function buildRemoteKart(color, pseudo) {
-  const k = buildKartModel(color);
-  const tex = makeTextTexture(pseudo || 'Joueur', '#ffffff', 512, 128, 52, 'rgba(20,25,45,0.55)');
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
-  sprite.scale.set(4.4, 1.1, 1); sprite.position.y = 2.6;
-  k.group.add(sprite);
-  k.group.userData.wheels = k.wheels;
-  return k.group;
-}
-
-function addRemote(uid, s) {
-  if (remotePlayers.has(uid)) return moveRemote(uid, s);
-  const group = buildRemoteKart(colorForUid(uid), s.pseudo);
-  group.rotation.order = 'YXZ';
-  group.position.set(s.x || 0, s.y || 0, s.z || 0);
-  group.rotation.y = s.heading || 0;
-  scene.add(group);
-  remotePlayers.set(uid, {
-    group,
-    data: s,
-    prev: { x: s.x || 0, y: s.y || 0, z: s.z || 0, h: s.heading || 0 },
-    target: { x: s.x || 0, y: s.y || 0, z: s.z || 0, h: s.heading || 0 },
-    t: 1,
-    lastSeen: performance.now(),
-  });
-  updatePlayerCount();
-}
-function moveRemote(uid, s) {
-  const r = remotePlayers.get(uid);
-  if (!r) return addRemote(uid, s);
-  r.prev = { x: r.group.position.x, y: r.group.position.y, z: r.group.position.z, h: r.group.rotation.y };
-  r.target = { x: s.x || 0, y: s.y || 0, z: s.z || 0, h: s.heading || 0 };
-  r.t = 0;
-  r.lastSeen = performance.now();
-  r.data = s;
-}
-function removeRemote(uid) {
-  const r = remotePlayers.get(uid);
-  if (!r) return;
-  scene.remove(r.group);
-  remotePlayers.delete(uid);
-  updatePlayerCount();
-}
-function lerpAngle(a, b, t) {
-  let d = (b - a) % (Math.PI * 2);
-  if (d > Math.PI) d -= Math.PI * 2;
-  if (d < -Math.PI) d += Math.PI * 2;
-  return a + d * t;
-}
-function updateRemotes(dt) {
-  // Purge des joueurs fantômes (onglet fermé brutalement sans onDisconnect)
-  const nowMs = performance.now();
-  for (const [uid, r] of remotePlayers) {
-    if (nowMs - r.lastSeen > 10000) removeRemote(uid);
-  }
-  for (const r of remotePlayers.values()) {
-    r.t = Math.min(r.t + dt / PUBLISH_INTERVAL, 1);
-    r.group.position.x = THREE.MathUtils.lerp(r.prev.x, r.target.x, r.t);
-    r.group.position.y = THREE.MathUtils.lerp(r.prev.y || 0, r.target.y || 0, r.t);
-    r.group.position.z = THREE.MathUtils.lerp(r.prev.z, r.target.z, r.t);
-    r.group.rotation.y = lerpAngle(r.prev.h, r.target.h, r.t);
-    // Tangage des joueurs distants déduit de leur trajectoire verticale
-    const dyR = (r.target.y || 0) - (r.prev.y || 0);
-    const dhR = Math.hypot(r.target.x - r.prev.x, r.target.z - r.prev.z);
-    const pitchR = dhR > 0.02 ? THREE.MathUtils.clamp(Math.atan2(-dyR, dhR), -0.55, 0.55) : 0;
-    r.group.rotation.x += (pitchR - r.group.rotation.x) * Math.min(6 * dt, 1);
-    const wlist = r.group.userData.wheels;
-    if (wlist) {
-      const v = Math.hypot(r.target.x - r.prev.x, r.target.z - r.prev.z) / PUBLISH_INTERVAL;
-      for (const w of wlist) w.mesh.rotation.x += v * dt * 2.2;
-    }
-  }
-}
-function updatePlayerCount() {
-  document.getElementById('player-count').textContent = remotePlayers.size + 1;
-}
-
-// Rejoint un canal de zone : quitte proprement l'ancien (listeners + présence)
-function joinZone(zoneName) {
-  for (const unsub of zoneUnsubs) { try { unsub(); } catch (e) { /* déjà détaché */ } }
-  zoneUnsubs = [];
-  if (playerRef) set(playerRef, null);
-  for (const uid of [...remotePlayers.keys()]) removeRemote(uid);
-  currentZone = zoneName;
-  playerRef = ref(netDb, `zones/${zoneName}/players/${myId}`);
-  onDisconnect(playerRef).remove();
-  set(playerRef, {
-    pseudo: myPseudo,
-    x: Math.round(car.pos.x * 100) / 100,
-    y: Math.round(car.y * 100) / 100,
-    z: Math.round(car.pos.z * 100) / 100,
-    heading: Math.round(car.heading * 1000) / 1000,
-    speed: 0,
-  });
-  const playersRef = ref(netDb, `zones/${zoneName}/players`);
-  zoneUnsubs.push(
-    onChildAdded(playersRef, snap => { if (snap.key !== myId) addRemote(snap.key, snap.val() || {}); }),
-    onChildChanged(playersRef, snap => { if (snap.key !== myId) moveRemote(snap.key, snap.val() || {}); }),
-    onChildRemoved(playersRef, snap => { if (snap.key !== myId) removeRemote(snap.key); }),
-  );
-  updatePlayerCount();
-}
-
-const net = {
-  async connect(pseudo) {
-    myPseudo = pseudo;
-    try {
-      const app = initializeApp(firebaseConfig);
-      const auth = getAuth(app);
-      const db = getDatabase(app);
-      const cred = await signInAnonymously(auth);
-      myUid = cred.user.uid;
-      // Id de session unique PAR ONGLET : deux onglets du même navigateur
-      // partagent le même uid anonyme, un suffixe aléatoire est donc
-      // indispensable pour qu'ils se voient entre eux.
-      myId = myUid.slice(0, 10) + '-' + Math.random().toString(36).slice(2, 8);
-      netDb = db;
-      joinZone(currentZone);
-      toast('Multijoueur connecté ! 🌐', 1800);
-    } catch (err) {
-      console.warn('Multijoueur indisponible :', err);
-      toast('Multijoueur indisponible : ' + ((err && (err.code || err.message)) || 'erreur inconnue'), 4500);
-    }
-  },
-  switchZone(zoneName) {
-    if (currentZone === zoneName) return;
-    if (!netDb) { currentZone = zoneName; return; }
-    joinZone(zoneName);
-  },
-  publish(dt) {
-    if (!playerRef) return;
-    publishTimer += dt;
-    if (publishTimer < PUBLISH_INTERVAL) return;
-    publishTimer = 0;
-    const data = {
-      pseudo: myPseudo,
-      x: Math.round(car.pos.x * 100) / 100,
-      y: Math.round(car.y * 100) / 100,
-      z: Math.round(car.pos.z * 100) / 100,
-      heading: Math.round(car.heading * 1000) / 1000,
-      speed: Math.round(car.speed * 10) / 10,
-    };
-    if (race.state) {
-      data.race = { lap: race.lap, prog: Math.round(raceProgress() * 1000) / 1000, fin: race.finishTime || 0 };
-    }
-    set(playerRef, data);
-  },
-};
-
-// ---------- Boucle ----------
-let last = performance.now();
-let running = false;
-function loop() {
-  requestAnimationFrame(loop);
-  const now = performance.now();
-  const dt = Math.min((now - last) / 1000, 0.05);
-  last = now;
-  updateAmbient(dt, now / 1000);
-  if (!running) { renderer.render(scene, camera); return; }
-
-  updateCar(dt);
-  updateParticles(dt);
-  updateCoins(dt, now / 1000);
-  updateZones();
-  updateRace(dt);
-  updateCamera(dt);
-  net.publish(dt);
-  updateRemotes(dt);
-
-  speedEl.firstChild.textContent = Math.round(Math.abs(car.speed) * 3.6 / 1.4) + ' ';
-  renderer.render(scene, camera);
-}
-loop();
-
-// ---------- Démarrage ----------
-const startScreen = document.getElementById('start-screen');
-const pseudoInput = document.getElementById('pseudo-input');
-pseudoInput.value = localStorage.getItem('rogames_pseudo') || '';
-document.getElementById('play-btn').addEventListener('click', () => {
-  const pseudo = (pseudoInput.value.trim() || 'Joueur') .slice(0, 16);
-  localStorage.setItem('rogames_pseudo', pseudo);
-  setCarName(pseudo);
-  net.connect(pseudo);
-  document.getElementById('hud-pseudo').textContent = '👤 ' + pseudo;
-  startScreen.style.display = 'none';
-  for (const el of document.querySelectorAll('.hud')) el.style.display = '';
-  document.getElementById('toast').style.display = '';
-  running = true;
-  toast('Bienvenue dans le hub ! 🏎️', 2000);
-});
-pseudoInput.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('play-btn').click(); });
-</script>
-</body>
-</html>
+  if (total > 1) reward += pos === 1 ? 30 :
