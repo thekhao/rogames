@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RoGames — Jeu de voiture multijoueur</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; font-family: 'Segoe UI', Arial, sans-serif; }
+  #game-canvas { display: block; width: 100%; height: 100%; }
+
+  /* ---- Écran d'accueil ---- */
+  #start-screen {
+    position: fixed; inset: 0; z-index: 50;
+    background: linear-gradient(160deg, #1c2b6b 0%, #3f6fd8 55%, #7db4f5 100%);
+    display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 18px;
+    color: #fff; text-align: center;
+  }
+  #start-screen h1 { font-size: 56px; letter-spacing: 2px; text-shadow: 0 4px 18px rgba(0,0,0,.35); }
+  #start-screen p { opacity: .85; max-width: 420px; line-height: 1.4; }
+  #pseudo-input {
+    padding: 12px 18px; font-size: 18px; border-radius: 12px; border: none; outline: none;
+    text-align: center; width: 260px;
+  }
+  #play-btn {
+    padding: 14px 52px; font-size: 22px; font-weight: bold; color: #fff;
+    background: linear-gradient(180deg, #ffb347, #ff8c1a); border: none; border-radius: 14px;
+    cursor: pointer; box-shadow: 0 6px 0 #c96a00, 0 10px 24px rgba(0,0,0,.3);
+    transition: transform .08s;
+  }
+  #play-btn:active { transform: translateY(4px); box-shadow: 0 2px 0 #c96a00; }
+  .phase-note { font-size: 13px; opacity: .65; margin-top: 8px; }
+
+  /* ---- HUD ---- */
+  .hud { position: fixed; z-index: 10; color: #fff; user-select: none; pointer-events: none; }
+  #hud-coins {
+    top: 16px; left: 16px; font-size: 22px; font-weight: bold;
+    background: rgba(20,25,45,.55); padding: 8px 16px; border-radius: 12px; backdrop-filter: blur(4px);
+  }
+  #hud-speed {
+    bottom: 18px; right: 20px; font-size: 30px; font-weight: bold;
+    background: rgba(20,25,45,.55); padding: 8px 18px; border-radius: 12px; backdrop-filter: blur(4px);
+  }
+  #hud-speed span { font-size: 14px; font-weight: normal; opacity: .7; }
+  #hud-pseudo {
+    top: 16px; right: 16px; font-size: 15px;
+    background: rgba(20,25,45,.55); padding: 7px 14px; border-radius: 10px; backdrop-filter: blur(4px);
+  }
+  #hud-controls {
+    bottom: 16px; left: 16px; font-size: 12.5px; line-height: 1.6;
+    background: rgba(20,25,45,.45); padding: 8px 14px; border-radius: 10px; backdrop-filter: blur(4px); opacity: .85;
+  }
+  #toast {
+    top: 14%; left: 50%; transform: translateX(-50%);
+    font-size: 20px; font-weight: bold; text-align: center;
+    background: rgba(20,25,45,.7); padding: 12px 26px; border-radius: 14px; backdrop-filter: blur(4px);
+    opacity: 0; transition: opacity .3s;
+  }
+</style>
+</head>
+<body>
+
+<div id="start-screen">
+  <h1>🏎️ RoGames</h1>
+  <p>Jeu de voiture 3D multijoueur dans le navigateur.<br>Roule librement dans le hub, ramasse des pièces et explore les portails des mini-jeux.</p>
+  <input id="pseudo-input" type="text" maxlength="16" placeholder="Choisis ton pseudo">
+  <button id="play-btn">JOUER</button>
+  <div class="phase-note">Phase 1 : cœur du jeu — le multijoueur arrive en Phase 2</div>
+</div>
+
+<div id="hud-coins" class="hud" style="display:none">🪙 <span id="coin-count">0</span></div>
+<div id="hud-speed" class="hud" style="display:none">0 <span>km/h</span></div>
+<div id="hud-pseudo" class="hud" style="display:none"></div>
+<div id="hud-controls" class="hud" style="display:none">
+  <b>Z/↑</b> accélérer &nbsp; <b>S/↓</b> freiner / reculer<br>
+  <b>Q/D ou ←/→</b> tourner &nbsp; <b>Espace</b> drift &nbsp; <b>R</b> respawn
+</div>
+<div id="toast" class="hud"></div>
+
+<canvas id="game-canvas"></canvas>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* =========================================================
+   RoGames — Phase 1 : cœur du jeu
+   - Voiture 3e personne, physique arcade
+   - Hub 3D (île, spawn, 5 portails, boutique, pièces, chill)
+   - Caméra suiveuse, rendu HD (ACES, ombres douces, fog)
+   Préparé pour la Phase 2 : voir le module `net` en bas.
+   ========================================================= */
+
+// ---------- Constantes du monde ----------
+const ISLAND_RADIUS = 95;
+const WORLD = { colliders: [] }; // { x, z, r } cercles infranchissables
+
+// ---------- Rendu ----------
+const canvas = document.getElementById('game-canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0xa8cdf0, 90, 260);
+
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 600);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------- Ciel dégradé ----------
+{
+  const skyGeo = new THREE.SphereGeometry(400, 24, 16);
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: {
+      top: { value: new THREE.Color(0x3f7fe0) },
+      bottom: { value: new THREE.Color(0xcfe6fb) },
+    },
+    vertexShader: `varying vec3 vPos; void main(){ vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: `uniform vec3 top; uniform vec3 bottom; varying vec3 vPos;
+      void main(){ float h = normalize(vPos).y * 0.5 + 0.5; gl_FragColor = vec4(mix(bottom, top, pow(h, 0.8)), 1.0); }`,
+  });
+  scene.add(new THREE.Mesh(skyGeo, skyMat));
+}
+
+// ---------- Lumières ----------
+const hemi = new THREE.HemisphereLight(0xbdd8ff, 0x6a8f57, 0.85);
+scene.add(hemi);
+
+const sun = new THREE.DirectionalLight(0xfff3d6, 2.0);
+sun.position.set(60, 90, 40);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -120; sun.shadow.camera.right = 120;
+sun.shadow.camera.top = 120; sun.shadow.camera.bottom = -120;
+sun.shadow.camera.far = 300;
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+
+// ---------- Matériaux utilitaires ----------
+const mat = (color, rough = 0.85, metal = 0.0) =>
+  new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal });
+
+function box(w, h, d, color, x = 0, y = 0, z = 0, shadow = true) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat(color));
+  m.position.set(x, y, z);
+  m.castShadow = shadow; m.receiveShadow = true;
+  return m;
+}
+
+// ---------- Île ----------
+{
+  const island = new THREE.Mesh(
+    new THREE.CylinderGeometry(ISLAND_RADIUS, ISLAND_RADIUS + 8, 6, 64),
+    mat(0x7ec850)
+  );
+  island.position.y = -3;
+  island.receiveShadow = true;
+  scene.add(island);
+
+  // Plage autour
+  const beach = new THREE.Mesh(
+    new THREE.CylinderGeometry(ISLAND_RADIUS + 8, ISLAND_RADIUS + 14, 2.5, 64),
+    mat(0xf0dca0)
+  );
+  beach.position.y = -5.2;
+  beach.receiveShadow = true;
+  scene.add(beach);
+
+  // Océan
+  const ocean = new THREE.Mesh(
+    new THREE.CircleGeometry(380, 48),
+    new THREE.MeshStandardMaterial({ color: 0x3b8fd4, roughness: 0.35, metalness: 0.1 })
+  );
+  ocean.rotation.x = -Math.PI / 2;
+  ocean.position.y = -5.5;
+  scene.add(ocean);
+
+  // Route circulaire
+  const road = new THREE.Mesh(
+    new THREE.RingGeometry(38, 50, 64),
+    new THREE.MeshStandardMaterial({ color: 0x4a4a55, roughness: 0.95 })
+  );
+  road.rotation.x = -Math.PI / 2;
+  road.position.y = 0.02;
+  road.receiveShadow = true;
+  scene.add(road);
+}
+
+// ---------- Nuages ----------
+{
+  const cloudMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, transparent: true, opacity: 0.92 });
+  for (let i = 0; i < 12; i++) {
+    const cloud = new THREE.Group();
+    const n = 3 + Math.floor(Math.random() * 3);
+    for (let j = 0; j < n; j++) {
+      const s = 5 + Math.random() * 7;
+      const puff = new THREE.Mesh(new THREE.SphereGeometry(s, 10, 8), cloudMat);
+      puff.position.set(j * s * 0.9 - n * 2, Math.random() * 2, Math.random() * 4);
+      puff.scale.y = 0.55;
+      cloud.add(puff);
+    }
+    const a = Math.random() * Math.PI * 2;
+    const r = 120 + Math.random() * 160;
+    cloud.position.set(Math.cos(a) * r, 55 + Math.random() * 30, Math.sin(a) * r);
+    scene.add(cloud);
+  }
+}
+
+// ---------- Spawn central : panneau de bienvenue + fontaine ----------
+{
+  // Fontaine (zone chill, collider)
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(6, 7, 1.4, 24), mat(0xb8c4d8));
+  base.position.set(0, 0.7, -20);
+  base.castShadow = base.receiveShadow = true;
+  scene.add(base);
+  const water = new THREE.Mesh(new THREE.CylinderGeometry(5.2, 5.2, 0.5, 24),
+    new THREE.MeshStandardMaterial({ color: 0x55b9f0, roughness: 0.2 }));
+  water.position.set(0, 1.45, -20);
+  scene.add(water);
+  const jet = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 1.4, 4.5, 12), mat(0x9fd9f7, 0.3));
+  jet.position.set(0, 3.4, -20);
+  scene.add(jet);
+  WORLD.colliders.push({ x: 0, z: -20, r: 7.5 });
+
+  // Panneau de bienvenue au spawn
+  const pole1 = box(0.4, 5, 0.4, 0x8a5a2b, -3, 2.5, 8);
+  const pole2 = box(0.4, 5, 0.4, 0x8a5a2b, 3, 2.5, 8);
+  const panel = box(8, 3, 0.4, 0xffffff, 0, 4.2, 8);
+  scene.add(pole1, pole2, panel);
+  const tex = makeTextTexture('Bienvenue sur RoGames !', '#1c2b6b', 512, 128, 44);
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.6, 2.6),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+  sign.position.set(0, 4.2, 7.78);
+  sign.rotation.y = Math.PI;
+  scene.add(sign);
+  WORLD.colliders.push({ x: -3, z: 8, r: 0.8 }, { x: 3, z: 8, r: 0.8 });
+}
+
+// ---------- 5 portails de mini-jeux (arches colorées) ----------
+const PORTALS = [
+  { name: '🏁 Course classique', color: 0xff4d4d },
+  { name: '🌀 Zone de drift',    color: 0x9b59f5 },
+  { name: '🐺 Chat / Loup',      color: 0xff9f1a },
+  { name: '🚀 Cascades',         color: 0x2ecc71 },
+  { name: '💥 Arène de combat',  color: 0x3498db },
+];
+const portalZones = [];
+PORTALS.forEach((p, i) => {
+  const angle = (i / PORTALS.length) * Math.PI * 2 + Math.PI / 5;
+  const px = Math.cos(angle) * 70;
+  const pz = Math.sin(angle) * 70;
+  const g = new THREE.Group();
+
+  const left = box(1.6, 9, 1.6, p.color, -5, 4.5, 0);
+  const right = box(1.6, 9, 1.6, p.color, 5, 4.5, 0);
+  const top = box(13.2, 1.8, 1.8, p.color, 0, 9.5, 0);
+  g.add(left, right, top);
+
+  // Halo intérieur
+  const halo = new THREE.Mesh(new THREE.PlaneGeometry(8.4, 7.6),
+    new THREE.MeshBasicMaterial({ color: p.color, transparent: true, opacity: 0.22, side: THREE.DoubleSide }));
+  halo.position.y = 4.4;
+  g.add(halo);
+
+  // Nom du mini-jeu
+  const tex = makeTextTexture(p.name, '#ffffff', 512, 96, 40, 'rgba(20,25,45,0.7)');
+  const label = new THREE.Mesh(new THREE.PlaneGeometry(11, 2.1),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }));
+  label.position.y = 11.4;
+  g.add(label);
+
+  g.position.set(px, 0, pz);
+  g.lookAt(0, 0, 0);
+  scene.add(g);
+
+  WORLD.colliders.push(
+    { x: px + Math.cos(angle + Math.PI / 2) * 5, z: pz + Math.sin(angle + Math.PI / 2) * 5, r: 1.4 },
+    { x: px - Math.cos(angle + Math.PI / 2) * 5, z: pz - Math.sin(angle + Math.PI / 2) * 5, r: 1.4 },
+  );
+  portalZones.push({ x: px, z: pz, r: 4.2, name: p.name });
+});
+
+// ---------- Boutique (bâtiment garage) ----------
+const SHOP = { x: 30, z: -38, r: 9 };
+{
+  const wall = box(16, 7, 12, 0xf2b632, SHOP.x, 3.5, SHOP.z);
+  scene.add(wall);
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(12.5, 4.5, 4), mat(0xd35400));
+  roof.position.set(SHOP.x, 9.2, SHOP.z);
+  roof.rotation.y = Math.PI / 4;
+  roof.castShadow = true;
+  scene.add(roof);
+  const door = box(6, 4.6, 0.4, 0x34495e, SHOP.x, 2.3, SHOP.z + 6.1);
+  scene.add(door);
+  const tex = makeTextTexture('🛒 BOUTIQUE', '#ffffff', 512, 96, 46, 'rgba(20,25,45,0.0)');
+  const label = new THREE.Mesh(new THREE.PlaneGeometry(10, 1.9),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+  label.position.set(SHOP.x, 5.8, SHOP.z + 6.25);
+  scene.add(label);
+  WORLD.colliders.push({ x: SHOP.x, z: SHOP.z, r: 9.5 });
+}
+
+// ---------- Zone chill : rampes décoratives + parking ----------
+{
+  // Rampes décoratives
+  for (let i = 0; i < 3; i++) {
+    const ramp = new THREE.Mesh(new THREE.BoxGeometry(7, 0.7, 12), mat(0xe06b9a));
+    ramp.position.set(-35 + i * 10, 1.6, 30);
+    ramp.rotation.x = -0.32;
+    ramp.castShadow = ramp.receiveShadow = true;
+    scene.add(ramp);
+  }
+  // Parking pour exhiber ses skins
+  for (let i = 0; i < 5; i++) {
+    const spot = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 7),
+      new THREE.MeshStandardMaterial({ color: 0x5a5a66, roughness: 0.95 }));
+    spot.rotation.x = -Math.PI / 2;
+    spot.position.set(-30 + i * 5.5, 0.03, 48);
+    spot.receiveShadow = true;
+    scene.add(spot);
+  }
+  // Arbres low-poly
+  for (let i = 0; i < 14; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 56 + Math.random() * 30;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    if (portalZones.some(p => Math.hypot(p.x - x, p.z - z) < 12)) continue;
+    const trunk = box(0.9, 3, 0.9, 0x8a5a2b, x, 1.5, z);
+    const leaves = new THREE.Mesh(new THREE.IcosahedronGeometry(2.6, 0), mat(0x3f9e4d));
+    leaves.position.set(x, 4.6, z);
+    leaves.castShadow = true;
+    scene.add(trunk, leaves);
+    WORLD.colliders.push({ x, z, r: 1.2 });
+  }
+}
+
+// ---------- Pièces à ramasser ----------
+const COIN_RESPAWN_S = 30;
+const coins = [];
+{
+  const coinGeo = new THREE.CylinderGeometry(0.85, 0.85, 0.22, 18);
+  const coinMat = new THREE.MeshStandardMaterial({ color: 0xffd02e, roughness: 0.25, metalness: 0.85 });
+  for (let i = 0; i < 28; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 12 + Math.random() * 72;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    if (WORLD.colliders.some(c => Math.hypot(c.x - x, c.z - z) < c.r + 2)) { i--; continue; }
+    const m = new THREE.Mesh(coinGeo, coinMat);
+    m.rotation.z = Math.PI / 2;
+    m.position.set(x, 1.1, z);
+    m.castShadow = true;
+    scene.add(m);
+    coins.push({ mesh: m, x, z, value: 1 + Math.floor(Math.random() * 5), taken: false, respawnAt: 0 });
+  }
+}
+
+// ---------- Voiture (kart de base, style low-poly arrondi) ----------
+const carGroup = new THREE.Group();
+const carBody = new THREE.Group();
+{
+  const chassis = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.75, 3.6), mat(0xe74c3c, 0.45, 0.25));
+  chassis.position.y = 0.65;
+  chassis.castShadow = true;
+  carBody.add(chassis);
+
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.65, 1.7), mat(0xfdfdfd, 0.25, 0.1));
+  cabin.position.set(0, 1.32, -0.15);
+  cabin.castShadow = true;
+  carBody.add(cabin);
+
+  const bumper = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.45, 0.5), mat(0xc0392b, 0.5));
+  bumper.position.set(0, 0.5, 1.9);
+  carBody.add(bumper);
+
+  const spoiler = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.14, 0.55), mat(0x2c3e50, 0.5));
+  spoiler.position.set(0, 1.25, -1.85);
+  carBody.add(spoiler);
+
+  carGroup.add(carBody);
+}
+const wheels = [];
+{
+  const wheelGeo = new THREE.CylinderGeometry(0.46, 0.46, 0.42, 16);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1b1b22, roughness: 0.9 });
+  [[-1.05, 1.25], [1.05, 1.25], [-1.05, -1.25], [1.05, -1.25]].forEach(([x, z], i) => {
+    const w = new THREE.Mesh(wheelGeo, wheelMat);
+    w.rotation.z = Math.PI / 2;
+    w.position.set(x, 0.46, z);
+    w.castShadow = true;
+    const holder = new THREE.Group();
+    holder.position.set(x, 0.46, z);
+    w.position.set(0, 0, 0);
+    holder.add(w);
+    carGroup.add(holder);
+    wheels.push({ holder, mesh: w, front: i < 2 });
+  });
+}
+scene.add(carGroup);
+
+// Pseudo au-dessus de la voiture (prêt pour la Phase 2)
+let nameSprite = null;
+function setCarName(name) {
+  if (nameSprite) carGroup.remove(nameSprite);
+  const tex = makeTextTexture(name, '#ffffff', 512, 128, 52, 'rgba(20,25,45,0.55)');
+  nameSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+  nameSprite.scale.set(4.4, 1.1, 1);
+  nameSprite.position.y = 2.6;
+  carGroup.add(nameSprite);
+}
+
+// ---------- Physique arcade ----------
+const car = {
+  pos: new THREE.Vector3(0, 0, 18),
+  vel: new THREE.Vector2(0, 0), // plan XZ
+  heading: Math.PI,             // regarde vers le centre
+  speed: 0,
+};
+const PHYS = {
+  accel: 26, brake: 38, maxSpeed: 30, maxReverse: -10,
+  drag: 0.6, steer: 1.9, gripNormal: 7.5, gripDrift: 1.6,
+};
+
+const keys = {};
+window.addEventListener('keydown', e => { keys[e.code] = true; if (e.code === 'Space') e.preventDefault(); });
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+function respawn() {
+  car.pos.set(0, 0, 18);
+  car.vel.set(0, 0);
+  car.speed = 0;
+  car.heading = Math.PI;
+}
+
+let driftAmount = 0;
+
+function updateCar(dt) {
+  const up = keys['KeyW'] || keys['KeyZ'] || keys['ArrowUp'];
+  const down = keys['KeyS'] || keys['ArrowDown'];
+  const left = keys['KeyA'] || keys['KeyQ'] || keys['ArrowLeft'];
+  const right = keys['KeyD'] || keys['ArrowRight'];
+  const drifting = keys['Space'];
+  if (keys['KeyR']) respawn();
+
+  // Accélération / frein
+  if (up) car.speed += PHYS.accel * dt;
+  else if (down) car.speed -= (car.speed > 0 ? PHYS.brake : PHYS.accel * 0.6) * dt;
+  else car.speed -= Math.sign(car.speed) * PHYS.drag * PHYS.accel * dt * 0.4;
+  car.speed = THREE.MathUtils.clamp(car.speed, PHYS.maxReverse, PHYS.maxSpeed);
+  if (Math.abs(car.speed) < 0.15 && !up && !down) car.speed = 0;
+
+  // Direction (réduite à basse vitesse)
+  const steerInput = (left ? 1 : 0) - (right ? 1 : 0);
+  const speedFactor = THREE.MathUtils.clamp(Math.abs(car.speed) / 8, 0, 1);
+  car.heading += steerInput * PHYS.steer * speedFactor * Math.sign(car.speed) * dt * (drifting ? 1.5 : 1);
+
+  // Vélocité : glisse vers la direction du nez (grip)
+  const forward = new THREE.Vector2(Math.sin(car.heading), Math.cos(car.heading));
+  const target = forward.clone().multiplyScalar(car.speed);
+  const grip = drifting ? PHYS.gripDrift : PHYS.gripNormal;
+  car.vel.lerp(target, 1 - Math.exp(-grip * dt));
+
+  // Angle de drift (pour particules et roulis)
+  const velDir = car.vel.length() > 0.5 ? car.vel.clone().normalize() : forward;
+  driftAmount = (1 - Math.abs(velDir.dot(forward))) * car.vel.length();
+
+  // Déplacement
+  car.pos.x += car.vel.x * dt;
+  car.pos.z += car.vel.y * dt;
+
+  // Bord de l'île
+  const distCenter = Math.hypot(car.pos.x, car.pos.z);
+  if (distCenter > ISLAND_RADIUS - 2) {
+    const nx = car.pos.x / distCenter, nz = car.pos.z / distCenter;
+    car.pos.x = nx * (ISLAND_RADIUS - 2);
+    car.pos.z = nz * (ISLAND_RADIUS - 2);
+    const dot = car.vel.x * nx + car.vel.y * nz;
+    if (dot > 0) { car.vel.x -= nx * dot * 1.4; car.vel.y -= nz * dot * 1.4; car.speed *= 0.55; spawnSparks(); }
+  }
+
+  // Colliders (portails, arbres, boutique, fontaine...)
+  for (const c of WORLD.colliders) {
+    const dx = car.pos.x - c.x, dz = car.pos.z - c.z;
+    const d = Math.hypot(dx, dz), min = c.r + 1.3;
+    if (d < min && d > 0.001) {
+      const nx = dx / d, nz = dz / d;
+      car.pos.x = c.x + nx * min;
+      car.pos.z = c.z + nz * min;
+      const dot = car.vel.x * nx + car.vel.y * nz;
+      if (dot < 0) { car.vel.x -= nx * dot * 1.5; car.vel.y -= nz * dot * 1.5; car.speed *= 0.5; spawnSparks(); }
+    }
+  }
+
+  // Application visuelle
+  carGroup.position.set(car.pos.x, 0, car.pos.z);
+  carGroup.rotation.y = car.heading;
+
+  // Suspension dynamique + roulis dans les virages
+  const t = performance.now() / 1000;
+  const bounce = Math.sin(t * 14) * 0.018 * Math.min(Math.abs(car.speed) / PHYS.maxSpeed, 1);
+  carBody.position.y = bounce;
+  const targetRoll = steerInput * -0.07 * speedFactor - (drifting ? steerInput * -0.05 : 0);
+  carBody.rotation.z += (targetRoll - carBody.rotation.z) * Math.min(8 * dt, 1);
+  carBody.rotation.x += ((-car.speed / PHYS.maxSpeed) * 0.03 - carBody.rotation.x) * Math.min(6 * dt, 1);
+
+  // Roues : roulement + braquage avant
+  for (const w of wheels) {
+    w.mesh.rotation.x += car.speed * dt * 2.2;
+    if (w.front) w.holder.rotation.y = steerInput * 0.42;
+  }
+
+  // Particules de drift
+  if (drifting && driftAmount > 3 && Math.abs(car.speed) > 6) spawnDust();
+}
+
+// ---------- Particules (poussière + étincelles) ----------
+const particles = [];
+const particleGeo = new THREE.BoxGeometry(0.28, 0.28, 0.28);
+function spawnParticle(color, x, y, z, vx, vy, vz, life) {
+  const m = new THREE.Mesh(particleGeo,
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 }));
+  m.position.set(x, y, z);
+  scene.add(m);
+  particles.push({ m, vx, vy, vz, life, maxLife: life });
+}
+function spawnDust() {
+  for (let i = 0; i < 2; i++) {
+    spawnParticle(0xcbb89a,
+      car.pos.x + (Math.random() - 0.5) * 1.6, 0.3, car.pos.z + (Math.random() - 0.5) * 1.6,
+      (Math.random() - 0.5) * 2, 1.5 + Math.random() * 2, (Math.random() - 0.5) * 2, 0.7);
+  }
+}
+function spawnSparks() {
+  for (let i = 0; i < 5; i++) {
+    spawnParticle(0xffd02e,
+      car.pos.x, 0.6, car.pos.z,
+      (Math.random() - 0.5) * 8, 2 + Math.random() * 4, (Math.random() - 0.5) * 8, 0.45);
+  }
+}
+function updateParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= dt;
+    if (p.life <= 0) { scene.remove(p.m); p.m.material.dispose(); particles.splice(i, 1); continue; }
+    p.m.position.x += p.vx * dt;
+    p.m.position.y += p.vy * dt;
+    p.m.position.z += p.vz * dt;
+    p.vy -= 6 * dt;
+    p.m.material.opacity = 0.85 * (p.life / p.maxLife);
+  }
+}
+
+// ---------- Pièces : collecte + réapparition ----------
+let coinTotal = Number(localStorage.getItem('rogames_coins') || 0);
+const coinCountEl = document.getElementById('coin-count');
+coinCountEl.textContent = coinTotal;
+
+function updateCoins(dt, now) {
+  for (const c of coins) {
+    if (c.taken) {
+      if (now >= c.respawnAt) { c.taken = false; c.mesh.visible = true; }
+      continue;
+    }
+    c.mesh.rotation.y += dt * 2.5;
+    c.mesh.position.y = 1.1 + Math.sin(now * 2 + c.x) * 0.15;
+    if (Math.hypot(car.pos.x - c.x, car.pos.z - c.z) < 2.1) {
+      c.taken = true;
+      c.mesh.visible = false;
+      c.respawnAt = now + COIN_RESPAWN_S;
+      coinTotal += c.value;
+      coinCountEl.textContent = coinTotal;
+      localStorage.setItem('rogames_coins', coinTotal); // Phase 4 : sauvegarde Firebase
+      toast(`+${c.value} 🪙`);
+    }
+  }
+}
+
+// ---------- Zones : portails + boutique ----------
+let lastZone = null;
+function updateZones() {
+  let zone = null;
+  for (const p of portalZones) {
+    if (Math.hypot(car.pos.x - p.x, car.pos.z - p.z) < p.r) { zone = p.name; break; }
+  }
+  if (!zone && Math.hypot(car.pos.x - SHOP.x, car.pos.z - (SHOP.z + 8)) < 6) zone = '🛒 Boutique';
+  if (zone && zone !== lastZone) {
+    toast(zone.startsWith('🛒')
+      ? '🛒 Boutique — disponible en Phase 4 !'
+      : `${zone} — disponible en Phase 3 !`, 2600);
+  }
+  lastZone = zone;
+}
+
+// ---------- Caméra 3e personne ----------
+const camPos = new THREE.Vector3(0, 8, 30);
+function updateCamera(dt) {
+  const back = 7.5 + (Math.abs(car.speed) / PHYS.maxSpeed) * 3.5; // recul selon vitesse
+  const driftYaw = THREE.MathUtils.clamp(driftAmount * 0.012, -0.25, 0.25);
+  const a = car.heading + Math.PI + driftYaw;
+  const target = new THREE.Vector3(
+    car.pos.x + Math.sin(a) * back,
+    4.2 + (Math.abs(car.speed) / PHYS.maxSpeed) * 1.2,
+    car.pos.z + Math.cos(a) * back
+  );
+  camPos.lerp(target, 1 - Math.exp(-5 * dt));
+  camera.position.copy(camPos);
+  camera.lookAt(car.pos.x, 1.6, car.pos.z);
+}
+
+// ---------- HUD ----------
+const toastEl = document.getElementById('toast');
+let toastTimer = null;
+function toast(msg, ms = 1200) {
+  toastEl.textContent = msg;
+  toastEl.style.opacity = 1;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.style.opacity = 0; }, ms);
+}
+const speedEl = document.getElementById('hud-speed');
+
+// ---------- Texture texte utilitaire ----------
+function makeTextTexture(text, color, w, h, fontSize, bg) {
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  if (bg) {
+    ctx.fillStyle = bg;
+    ctx.beginPath();
+    ctx.roundRect(0, 0, w, h, 22);
+    ctx.fill();
+  }
+  ctx.font = `bold ${fontSize}px 'Segoe UI', Arial, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = color;
+  ctx.fillText(text, w / 2, h / 2 + 2);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/* ---------- Module réseau (Phase 2 — Firebase) ----------
+   Point d'intégration prévu : à chaque frame, `net.publish(state)`
+   enverra { x, z, heading, speed, pseudo } dans la Realtime Database
+   (~10-15 fois/seconde), et `net.onPlayers(cb)` affichera les autres
+   voitures avec interpolation. La config Firebase du cahier des charges
+   sera branchée ici. */
+const net = {
+  publish(_state) { /* Phase 2 */ },
+  onPlayers(_cb) { /* Phase 2 */ },
+};
+
+// ---------- Boucle ----------
+let last = performance.now();
+let running = false;
+function loop() {
+  requestAnimationFrame(loop);
+  const now = performance.now();
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  if (!running) { renderer.render(scene, camera); return; }
+
+  updateCar(dt);
+  updateParticles(dt);
+  updateCoins(dt, now / 1000);
+  updateZones();
+  updateCamera(dt);
+  net.publish({ x: car.pos.x, z: car.pos.z, heading: car.heading, speed: car.speed });
+
+  speedEl.firstChild.textContent = Math.round(Math.abs(car.speed) * 3.6 / 1.4) + ' ';
+  renderer.render(scene, camera);
+}
+loop();
+
+// ---------- Démarrage ----------
+const startScreen = document.getElementById('start-screen');
+const pseudoInput = document.getElementById('pseudo-input');
+pseudoInput.value = localStorage.getItem('rogames_pseudo') || '';
+document.getElementById('play-btn').addEventListener('click', () => {
+  const pseudo = (pseudoInput.value.trim() || 'Joueur') .slice(0, 16);
+  localStorage.setItem('rogames_pseudo', pseudo);
+  setCarName(pseudo);
+  document.getElementById('hud-pseudo').textContent = '👤 ' + pseudo;
+  startScreen.style.display = 'none';
+  for (const el of document.querySelectorAll('.hud')) el.style.display = '';
+  document.getElementById('toast').style.display = '';
+  running = true;
+  toast('Bienvenue dans le hub ! 🏎️', 2000);
+});
+pseudoInput.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('play-btn').click(); });
+</script>
+</body>
+</html>
