@@ -1297,7 +1297,7 @@ const firebaseConfig = {
 const ZONE = 'hub';
 const PUBLISH_INTERVAL = 0.08; // ~12 envois/seconde
 const REMOTE_COLORS = [0x3498db, 0x2ecc71, 0xf2b632, 0x9b59f5, 0xff9f1a, 0x1abc9c, 0xe06b9a];
-let myUid = null, myPseudo = 'Joueur', playerRef = null, publishTimer = 0;
+let myUid = null, myId = null, myPseudo = 'Joueur', playerRef = null, publishTimer = 0;
 const remotePlayers = new Map(); // uid -> { group, prev, target, t }
 
 function colorForUid(uid) {
@@ -1328,6 +1328,7 @@ function addRemote(uid, s) {
     prev: { x: s.x || 0, y: s.y || 0, z: s.z || 0, h: s.heading || 0 },
     target: { x: s.x || 0, y: s.y || 0, z: s.z || 0, h: s.heading || 0 },
     t: 1,
+    lastSeen: performance.now(),
   });
   updatePlayerCount();
 }
@@ -1337,6 +1338,7 @@ function moveRemote(uid, s) {
   r.prev = { x: r.group.position.x, y: r.group.position.y, z: r.group.position.z, h: r.group.rotation.y };
   r.target = { x: s.x || 0, y: s.y || 0, z: s.z || 0, h: s.heading || 0 };
   r.t = 0;
+  r.lastSeen = performance.now();
 }
 function removeRemote(uid) {
   const r = remotePlayers.get(uid);
@@ -1352,6 +1354,11 @@ function lerpAngle(a, b, t) {
   return a + d * t;
 }
 function updateRemotes(dt) {
+  // Purge des joueurs fantômes (onglet fermé brutalement sans onDisconnect)
+  const nowMs = performance.now();
+  for (const [uid, r] of remotePlayers) {
+    if (nowMs - r.lastSeen > 10000) removeRemote(uid);
+  }
   for (const r of remotePlayers.values()) {
     r.t = Math.min(r.t + dt / PUBLISH_INTERVAL, 1);
     r.group.position.x = THREE.MathUtils.lerp(r.prev.x, r.target.x, r.t);
@@ -1383,17 +1390,21 @@ const net = {
       const db = getDatabase(app);
       const cred = await signInAnonymously(auth);
       myUid = cred.user.uid;
-      playerRef = ref(db, `zones/${ZONE}/players/${myUid}`);
+      // Id de session unique PAR ONGLET : deux onglets du même navigateur
+      // partagent le même uid anonyme, un suffixe aléatoire est donc
+      // indispensable pour qu'ils se voient entre eux.
+      myId = myUid.slice(0, 10) + '-' + Math.random().toString(36).slice(2, 8);
+      playerRef = ref(db, `zones/${ZONE}/players/${myId}`);
       onDisconnect(playerRef).remove();
       set(playerRef, { pseudo, x: 0, z: 18, heading: Math.PI, speed: 0 });
       const playersRef = ref(db, `zones/${ZONE}/players`);
-      onChildAdded(playersRef, snap => { if (snap.key !== myUid) addRemote(snap.key, snap.val() || {}); });
-      onChildChanged(playersRef, snap => { if (snap.key !== myUid) moveRemote(snap.key, snap.val() || {}); });
-      onChildRemoved(playersRef, snap => { if (snap.key !== myUid) removeRemote(snap.key); });
+      onChildAdded(playersRef, snap => { if (snap.key !== myId) addRemote(snap.key, snap.val() || {}); });
+      onChildChanged(playersRef, snap => { if (snap.key !== myId) moveRemote(snap.key, snap.val() || {}); });
+      onChildRemoved(playersRef, snap => { if (snap.key !== myId) removeRemote(snap.key); });
       toast('Multijoueur connecté ! 🌐', 1800);
     } catch (err) {
       console.warn('Multijoueur indisponible :', err);
-      toast('Mode hors-ligne — multijoueur indisponible', 2600);
+      toast('Multijoueur indisponible : ' + ((err && (err.code || err.message)) || 'erreur inconnue'), 4500);
     }
   },
   publish(dt) {
