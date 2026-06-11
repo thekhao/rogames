@@ -60,6 +60,20 @@
     background: rgba(20,25,45,.7); padding: 12px 26px; border-radius: 14px; backdrop-filter: blur(4px);
     opacity: 0; transition: opacity .3s;
   }
+/* HUD course */
+#hud-race {
+  position: fixed; z-index: 10; top: 14px; left: 50%; transform: translateX(-50%);
+  background: rgba(20,25,45,.6); border-radius: 14px; padding: 8px 18px;
+  text-align: center;
+}
+#hud-race .race-time { font-size: 26px; font-weight: 700; }
+#hud-race .race-sub { font-size: 12.5px; opacity: .85; }
+#countdown {
+  position: fixed; z-index: 11; top: 34%; left: 50%; transform: translate(-50%, -50%);
+  font-size: 120px; font-weight: 800; color: #ffd02e;
+  text-shadow: 0 4px 24px rgba(0,0,0,.45);
+  opacity: 0; transition: opacity .25s; pointer-events: none;
+}
 </style>
 </head>
 <body>
@@ -78,9 +92,12 @@
 <div id="hud-players" class="hud" style="display:none">👥 <span id="player-count">1</span> en ligne</div>
 <div id="hud-controls" class="hud" style="display:none">
   <b>Z/↑</b> accélérer &nbsp; <b>S/↓</b> freiner / reculer<br>
-  <b>Q/D ou ←/→</b> tourner &nbsp; <b>Espace</b> drift &nbsp; <b>R</b> respawn
+  <b>Q/D ou ←/→</b> tourner &nbsp; <b>Espace</b> drift &nbsp; <b>R</b> respawn<br>
+  🏁 Roule dans le portail <b>Course classique</b> pour lancer une course &nbsp; <b>Échap</b> abandonner
 </div>
 <div id="toast" class="hud"></div>
+<div id="hud-race" style="display:none"></div>
+<div id="countdown"></div>
 
 <canvas id="game-canvas"></canvas>
 
@@ -993,12 +1010,16 @@ let driftAmount = 0;
 let carPitch = 0; // tangage (pentes + sauts)
 
 function updateCar(dt) {
-  const up = keys['KeyW'] || keys['KeyZ'] || keys['ArrowUp'];
-  const down = keys['KeyS'] || keys['ArrowDown'];
-  const left = keys['KeyA'] || keys['KeyQ'] || keys['ArrowLeft'];
-  const right = keys['KeyD'] || keys['ArrowRight'];
-  const drifting = keys['Space'];
-  if (keys['KeyR']) respawn();
+  const lock = race.locked; // inputs bloqués pendant compte à rebours / arrivée
+  const up = !lock && (keys['KeyW'] || keys['KeyZ'] || keys['ArrowUp']);
+  const down = !lock && (keys['KeyS'] || keys['ArrowDown']);
+  const left = !lock && (keys['KeyA'] || keys['KeyQ'] || keys['ArrowLeft']);
+  const right = !lock && (keys['KeyD'] || keys['ArrowRight']);
+  const drifting = !lock && keys['Space'];
+  if (keys['KeyR']) {
+    if (race.state === 'running') raceRespawn();
+    else if (!race.state) respawn();
+  }
 
   // Accélération / frein
   if (up) car.speed += PHYS.accel * dt;
@@ -1183,18 +1204,247 @@ function updateCoins(dt, now) {
 // ---------- Zones : portails + boutique ----------
 let lastZone = null;
 function updateZones() {
+  if (race.state) { lastZone = null; return; } // pas de portails pendant une course
   let zone = null;
   for (const p of portalZones) {
     if (Math.hypot(car.pos.x - p.x, car.pos.z - p.z) < p.r) { zone = p.name; break; }
   }
   if (!zone && Math.hypot(car.pos.x - SHOP.x, car.pos.z - (SHOP.z + 8)) < 6) zone = '🛒 Boutique';
   if (zone && zone !== lastZone) {
-    toast(zone.startsWith('🛒')
-      ? '🛒 Boutique — disponible en Phase 4 !'
-      : `${zone} — disponible en Phase 3 !`, 2600);
+    if (zone === PORTALS[0].name) {
+      if (performance.now() > race.cooldownUntil) startRace();
+    } else {
+      toast(zone.startsWith('🛒')
+        ? '🛒 Boutique — disponible en Phase 4 !'
+        : `${zone} — disponible en Phase 3 !`, 2600);
+    }
   }
   lastZone = zone;
 }
+
+/* ---------- Mini-jeu 1 : Course classique (Phase 3) ----------
+   - Déclenchée en roulant dans le portail 🏁
+   - 3 tours du circuit (ligne médiane de la route, r=44), 8 checkpoints
+   - Compte à rebours 3-2-1, chrono, record local, classement temps réel
+   - Zone réseau dédiée : zones/course/players */
+const RACE = { laps: 3, radius: 44, checkpoints: 8, startAngle: Math.PI / 5, detect: 8 };
+const race = {
+  state: null,          // null | 'countdown' | 'running' | 'finished'
+  lap: 1, next: 1,
+  t0: 0, time: 0, finishTime: 0,
+  countdownEnd: 0, cooldownUntil: 0,
+  locked: false,
+};
+const raceCpPos = [];
+for (let i = 0; i < RACE.checkpoints; i++) {
+  const a = RACE.startAngle + (i / RACE.checkpoints) * Math.PI * 2;
+  raceCpPos.push({ a, x: Math.cos(a) * RACE.radius, z: Math.sin(a) * RACE.radius });
+}
+let bestRaceTime = Number(localStorage.getItem('rogames_best_course') || 0);
+const raceHudEl = document.getElementById('hud-race');
+const countdownEl = document.getElementById('countdown');
+
+// Ligne de départ/arrivée en damier (toujours visible sur la route)
+{
+  const cv = document.createElement('canvas');
+  cv.width = 160; cv.height = 40;
+  const cctx = cv.getContext('2d');
+  for (let x = 0; x < 8; x++) for (let y = 0; y < 2; y++) {
+    cctx.fillStyle = (x + y) % 2 ? '#15181f' : '#f2f4f8';
+    cctx.fillRect(x * 20, y * 20, 20, 20);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const line = new THREE.Mesh(new THREE.PlaneGeometry(11.5, 3), new THREE.MeshBasicMaterial({ map: tex }));
+  line.rotation.x = -Math.PI / 2;
+  line.position.y = 0.045;
+  const lineGroup = new THREE.Group();
+  lineGroup.add(line);
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: makeTextTexture('🏁 DÉPART / ARRIVÉE', '#ffffff', 512, 96, 44, 'rgba(20,25,45,0.55)'),
+    transparent: true,
+  }));
+  label.scale.set(9, 1.7, 1);
+  label.position.y = 5.4;
+  lineGroup.add(label);
+  const s0 = raceCpPos[0];
+  lineGroup.position.set(s0.x, 0, s0.z);
+  lineGroup.rotation.y = -s0.a;
+  scene.add(lineGroup);
+  animatedProps.push({ update: t => { label.position.y = 5.4 + Math.sin(t * 1.4) * 0.25; } });
+}
+
+// Portiques de checkpoints (visibles uniquement pendant la course)
+const gateMatOff = new THREE.MeshStandardMaterial({ color: 0x6cd2ff, transparent: true, opacity: 0.35, roughness: 0.4 });
+const gateMatOn = new THREE.MeshStandardMaterial({ color: 0xffd02e, transparent: true, opacity: 0.9, roughness: 0.3, emissive: 0xffd02e, emissiveIntensity: 0.35 });
+const raceGates = [];
+for (const c of raceCpPos) {
+  const g = new THREE.Group();
+  for (const sx of [-5.6, 5.6]) {
+    const pylon = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.3, 2.6, 8), mat(0xe8edf6, 0.5, 0.2));
+    pylon.position.set(sx, 1.3, 0);
+    g.add(pylon);
+  }
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(2.4, 0.24, 8, 26), gateMatOff);
+  ring.position.y = 3.6;
+  g.add(ring);
+  g.position.set(c.x, 0, c.z);
+  g.rotation.y = -c.a;
+  g.visible = false;
+  scene.add(g);
+  raceGates.push({ group: g, ring });
+}
+
+function fmtTime(t) {
+  const m = Math.floor(t / 60);
+  const s = t - m * 60;
+  return `${m}:${s < 10 ? '0' : ''}${s.toFixed(2)}`;
+}
+
+// Progression continue : checkpoints passés + fraction vers le prochain
+function raceProgress() {
+  const passed = (race.lap - 1) * RACE.checkpoints + (race.next === 0 ? RACE.checkpoints - 1 : race.next - 1);
+  const c = raceCpPos[race.next];
+  const dist = Math.hypot(car.pos.x - c.x, car.pos.z - c.z);
+  const seg = (Math.PI * 2 * RACE.radius) / RACE.checkpoints;
+  const frac = THREE.MathUtils.clamp(1 - dist / seg, 0, 0.95);
+  return passed + frac;
+}
+
+// Classement en temps réel face aux autres joueurs de la zone course
+function racePosition() {
+  let pos = 1, total = 1;
+  const myFin = race.finishTime || 0;
+  const myProg = raceProgress();
+  for (const r of remotePlayers.values()) {
+    const rr = r.data && r.data.race;
+    if (!rr) continue;
+    total++;
+    if (myFin) {
+      if (rr.fin && rr.fin < myFin) pos++;
+    } else if (rr.fin || (rr.prog || 0) > myProg) {
+      pos++;
+    }
+  }
+  return { pos, total };
+}
+
+function startRace() {
+  race.state = 'countdown';
+  race.lap = 1; race.next = 1;
+  race.time = 0; race.finishTime = 0;
+  race.locked = true;
+  race.countdownEnd = performance.now() + 3300;
+  const s0 = raceCpPos[0];
+  car.pos.set(s0.x, 0, s0.z);
+  car.heading = -s0.a;
+  car.vel.set(0, 0); car.speed = 0; car.y = 0; car.vy = 0; car.grounded = true;
+  for (const g of raceGates) g.group.visible = true;
+  raceHudEl.style.display = '';
+  updateRaceHud();
+  net.switchZone('course');
+  toast('🏁 Course classique — 3 tours !', 2200);
+}
+
+function raceRespawn() {
+  const idx = (race.next + RACE.checkpoints - 1) % RACE.checkpoints;
+  const c = raceCpPos[idx];
+  car.pos.set(c.x, 0, c.z);
+  car.heading = -c.a;
+  car.vel.set(0, 0); car.speed = 0; car.y = 0; car.vy = 0; car.grounded = true;
+}
+
+function finishRace() {
+  race.state = 'finished';
+  race.finishTime = race.time;
+  race.locked = true;
+  const { pos, total } = racePosition();
+  let reward = 40;
+  if (total > 1) reward += pos === 1 ? 30 : pos === 2 ? 15 : 5;
+  let recordTxt = '';
+  if (!bestRaceTime || race.time < bestRaceTime) {
+    bestRaceTime = race.time;
+    localStorage.setItem('rogames_best_course', bestRaceTime);
+    reward += 20;
+    recordTxt = ' · 🏆 Nouveau record !';
+  }
+  coinTotal += reward;
+  coinCountEl.textContent = coinTotal;
+  localStorage.setItem('rogames_coins', coinTotal);
+  const posTxt = pos === 1 ? '1ᵉʳ' : `${pos}ᵉ`;
+  toast(`🏁 Arrivée ! ${posTxt}/${total} en ${fmtTime(race.time)} — +${reward} 🪙${recordTxt}`, 5200);
+  updateRaceHud();
+  setTimeout(endRace, 5400);
+}
+
+function endRace() {
+  race.state = null;
+  race.locked = false;
+  race.cooldownUntil = performance.now() + 4000;
+  for (const g of raceGates) { g.group.visible = false; g.ring.material = gateMatOff; g.ring.scale.set(1, 1, 1); }
+  raceHudEl.style.display = 'none';
+  countdownEl.style.opacity = 0;
+  respawn();
+  net.switchZone('hub');
+}
+
+function updateRaceHud() {
+  const { pos, total } = racePosition();
+  const posTxt = total > 1 ? ` &nbsp;·&nbsp; ${pos === 1 ? '1ᵉʳ' : pos + 'ᵉ'}/${total}` : '';
+  const record = bestRaceTime ? ` &nbsp;·&nbsp; Record ${fmtTime(bestRaceTime)}` : '';
+  raceHudEl.innerHTML =
+    `<div class="race-time">⏱ ${fmtTime(race.state === 'finished' ? race.finishTime : race.time)}</div>` +
+    `<div class="race-sub">Tour ${Math.min(race.lap, RACE.laps)}/${RACE.laps}${posTxt}</div>` +
+    `<div class="race-sub">🏁 Course classique${record}</div>`;
+}
+
+function updateRace(dt) {
+  if (!race.state) return;
+  const now = performance.now();
+  if (race.state === 'countdown') {
+    const remain = race.countdownEnd - now;
+    if (remain > 0) {
+      countdownEl.textContent = Math.min(3, Math.ceil(remain / 1000));
+      countdownEl.style.opacity = 1;
+    } else {
+      countdownEl.style.opacity = 0;
+      race.state = 'running';
+      race.locked = false;
+      race.t0 = now;
+      toast('GO ! 🚦', 900);
+    }
+  } else if (race.state === 'running') {
+    race.time = (now - race.t0) / 1000;
+    const c = raceCpPos[race.next];
+    if (Math.hypot(car.pos.x - c.x, car.pos.z - c.z) < RACE.detect) {
+      if (race.next === 0) {
+        if (race.lap >= RACE.laps) {
+          finishRace();
+        } else {
+          race.lap++; race.next = 1;
+          toast(`Tour ${race.lap}/${RACE.laps} ! 🏎️`, 1500);
+        }
+      } else {
+        race.next = (race.next + 1) % RACE.checkpoints;
+      }
+    }
+  }
+  // Anneau actif en surbrillance pulsante
+  for (let i = 0; i < raceGates.length; i++) {
+    const active = race.state === 'running' && i === race.next;
+    raceGates[i].ring.material = active ? gateMatOn : gateMatOff;
+    const s = active ? 1 + Math.sin(now / 160) * 0.09 : 1;
+    raceGates[i].ring.scale.set(s, s, s);
+  }
+  updateRaceHud();
+}
+
+window.addEventListener('keydown', e => {
+  if (e.code === 'Escape' && race.state && race.state !== 'finished') {
+    toast('Course abandonnée 🏳️', 1800);
+    endRace();
+  }
+});
 
 // ---------- Caméra 3e personne ----------
 const camPos = new THREE.Vector3(0, 8, 30);
@@ -1298,6 +1548,9 @@ const ZONE = 'hub';
 const PUBLISH_INTERVAL = 0.08; // ~12 envois/seconde
 const REMOTE_COLORS = [0x3498db, 0x2ecc71, 0xf2b632, 0x9b59f5, 0xff9f1a, 0x1abc9c, 0xe06b9a];
 let myUid = null, myId = null, myPseudo = 'Joueur', playerRef = null, publishTimer = 0;
+let netDb = null;            // base RTDB une fois connecté
+let currentZone = ZONE;      // zone réseau active (hub / course)
+let zoneUnsubs = [];         // listeners à détacher en changeant de zone
 const remotePlayers = new Map(); // uid -> { group, prev, target, t }
 
 function colorForUid(uid) {
@@ -1325,6 +1578,7 @@ function addRemote(uid, s) {
   scene.add(group);
   remotePlayers.set(uid, {
     group,
+    data: s,
     prev: { x: s.x || 0, y: s.y || 0, z: s.z || 0, h: s.heading || 0 },
     target: { x: s.x || 0, y: s.y || 0, z: s.z || 0, h: s.heading || 0 },
     t: 1,
@@ -1339,6 +1593,7 @@ function moveRemote(uid, s) {
   r.target = { x: s.x || 0, y: s.y || 0, z: s.z || 0, h: s.heading || 0 };
   r.t = 0;
   r.lastSeen = performance.now();
+  r.data = s;
 }
 function removeRemote(uid) {
   const r = remotePlayers.get(uid);
@@ -1381,6 +1636,32 @@ function updatePlayerCount() {
   document.getElementById('player-count').textContent = remotePlayers.size + 1;
 }
 
+// Rejoint un canal de zone : quitte proprement l'ancien (listeners + présence)
+function joinZone(zoneName) {
+  for (const unsub of zoneUnsubs) { try { unsub(); } catch (e) { /* déjà détaché */ } }
+  zoneUnsubs = [];
+  if (playerRef) set(playerRef, null);
+  for (const uid of [...remotePlayers.keys()]) removeRemote(uid);
+  currentZone = zoneName;
+  playerRef = ref(netDb, `zones/${zoneName}/players/${myId}`);
+  onDisconnect(playerRef).remove();
+  set(playerRef, {
+    pseudo: myPseudo,
+    x: Math.round(car.pos.x * 100) / 100,
+    y: Math.round(car.y * 100) / 100,
+    z: Math.round(car.pos.z * 100) / 100,
+    heading: Math.round(car.heading * 1000) / 1000,
+    speed: 0,
+  });
+  const playersRef = ref(netDb, `zones/${zoneName}/players`);
+  zoneUnsubs.push(
+    onChildAdded(playersRef, snap => { if (snap.key !== myId) addRemote(snap.key, snap.val() || {}); }),
+    onChildChanged(playersRef, snap => { if (snap.key !== myId) moveRemote(snap.key, snap.val() || {}); }),
+    onChildRemoved(playersRef, snap => { if (snap.key !== myId) removeRemote(snap.key); }),
+  );
+  updatePlayerCount();
+}
+
 const net = {
   async connect(pseudo) {
     myPseudo = pseudo;
@@ -1394,32 +1675,36 @@ const net = {
       // partagent le même uid anonyme, un suffixe aléatoire est donc
       // indispensable pour qu'ils se voient entre eux.
       myId = myUid.slice(0, 10) + '-' + Math.random().toString(36).slice(2, 8);
-      playerRef = ref(db, `zones/${ZONE}/players/${myId}`);
-      onDisconnect(playerRef).remove();
-      set(playerRef, { pseudo, x: 0, z: 18, heading: Math.PI, speed: 0 });
-      const playersRef = ref(db, `zones/${ZONE}/players`);
-      onChildAdded(playersRef, snap => { if (snap.key !== myId) addRemote(snap.key, snap.val() || {}); });
-      onChildChanged(playersRef, snap => { if (snap.key !== myId) moveRemote(snap.key, snap.val() || {}); });
-      onChildRemoved(playersRef, snap => { if (snap.key !== myId) removeRemote(snap.key); });
+      netDb = db;
+      joinZone(currentZone);
       toast('Multijoueur connecté ! 🌐', 1800);
     } catch (err) {
       console.warn('Multijoueur indisponible :', err);
       toast('Multijoueur indisponible : ' + ((err && (err.code || err.message)) || 'erreur inconnue'), 4500);
     }
   },
+  switchZone(zoneName) {
+    if (currentZone === zoneName) return;
+    if (!netDb) { currentZone = zoneName; return; }
+    joinZone(zoneName);
+  },
   publish(dt) {
     if (!playerRef) return;
     publishTimer += dt;
     if (publishTimer < PUBLISH_INTERVAL) return;
     publishTimer = 0;
-    set(playerRef, {
+    const data = {
       pseudo: myPseudo,
       x: Math.round(car.pos.x * 100) / 100,
       y: Math.round(car.y * 100) / 100,
       z: Math.round(car.pos.z * 100) / 100,
       heading: Math.round(car.heading * 1000) / 1000,
       speed: Math.round(car.speed * 10) / 10,
-    });
+    };
+    if (race.state) {
+      data.race = { lap: race.lap, prog: Math.round(raceProgress() * 1000) / 1000, fin: race.finishTime || 0 };
+    }
+    set(playerRef, data);
   },
 };
 
@@ -1438,6 +1723,7 @@ function loop() {
   updateParticles(dt);
   updateCoins(dt, now / 1000);
   updateZones();
+  updateRace(dt);
   updateCamera(dt);
   net.publish(dt);
   updateRemotes(dt);
