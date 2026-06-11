@@ -22,7 +22,7 @@ Ouvrir `index.html` dans un navigateur, ou visiter la version en ligne (GitHub P
 ## Phases de réalisation
 
 - [x] **Phase 1 — Cœur du jeu** : voiture 3e personne, physique arcade, hub 3D, caméra, rendu HD
-- [ ] **Phase 2 — Multijoueur** : Firebase (auth anonyme, sync positions, présence, pseudos)
+- [x] **Phase 2 — Multijoueur** : Firebase (auth anonyme, sync positions, présence, pseudos)
 - [ ] **Phase 3 — Mini-jeux** : les 5 modes avec portails, scores et récompenses
 - [ ] **Phase 4 — Économie** : pièces, boutique, skins, missions quotidiennes, sauvegarde
 - [ ] **Phase 5 — Déploiement** : mise en ligne GitHub Pages

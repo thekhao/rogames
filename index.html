@@ -46,6 +46,10 @@
     top: 16px; right: 16px; font-size: 15px;
     background: rgba(20,25,45,.55); padding: 7px 14px; border-radius: 10px; backdrop-filter: blur(4px);
   }
+  #hud-players {
+    top: 60px; right: 16px; font-size: 14px;
+    background: rgba(20,25,45,.55); padding: 6px 12px; border-radius: 10px; backdrop-filter: blur(4px);
+  }
   #hud-controls {
     bottom: 16px; left: 16px; font-size: 12.5px; line-height: 1.6;
     background: rgba(20,25,45,.45); padding: 8px 14px; border-radius: 10px; backdrop-filter: blur(4px); opacity: .85;
@@ -65,12 +69,13 @@
   <p>Jeu de voiture 3D multijoueur dans le navigateur.<br>Roule librement dans le hub, ramasse des pièces et explore les portails des mini-jeux.</p>
   <input id="pseudo-input" type="text" maxlength="16" placeholder="Choisis ton pseudo">
   <button id="play-btn">JOUER</button>
-  <div class="phase-note">Phase 1 : cœur du jeu — le multijoueur arrive en Phase 2</div>
+  <div class="phase-note">Multijoueur temps réel — les joueurs connectés se voient dans le hub</div>
 </div>
 
 <div id="hud-coins" class="hud" style="display:none">🪙 <span id="coin-count">0</span></div>
 <div id="hud-speed" class="hud" style="display:none">0 <span>km/h</span></div>
 <div id="hud-pseudo" class="hud" style="display:none"></div>
+<div id="hud-players" class="hud" style="display:none">👥 <span id="player-count">1</span> en ligne</div>
 <div id="hud-controls" class="hud" style="display:none">
   <b>Z/↑</b> accélérer &nbsp; <b>S/↓</b> freiner / reculer<br>
   <b>Q/D ou ←/→</b> tourner &nbsp; <b>Espace</b> drift &nbsp; <b>R</b> respawn
@@ -85,6 +90,9 @@
 
 <script type="module">
 import * as THREE from 'three';
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import { getDatabase, ref, set, onChildAdded, onChildChanged, onChildRemoved, onDisconnect } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
 
 /* =========================================================
    RoGames — Phase 1 : cœur du jeu
@@ -653,14 +661,133 @@ function makeTextTexture(text, color, w, h, fontSize, bg) {
 }
 
 /* ---------- Module réseau (Phase 2 — Firebase) ----------
-   Point d'intégration prévu : à chaque frame, `net.publish(state)`
-   enverra { x, z, heading, speed, pseudo } dans la Realtime Database
-   (~10-15 fois/seconde), et `net.onPlayers(cb)` affichera les autres
-   voitures avec interpolation. La config Firebase du cahier des charges
-   sera branchée ici. */
+   - Auth anonyme + pseudo
+   - Sync position/rotation/vitesse ~12 fois/seconde
+   - Présence automatique (onDisconnect) — retire les déconnectés
+   - Interpolation des autres joueurs (mouvement lisse)
+   - Un canal par zone : zones/hub/players (course, arène... en Phase 3) */
+const firebaseConfig = {
+  apiKey: "AIzaSyCaof7m4LAzzZMEN8aSca_Uxl2LTf2Zq3Y",
+  authDomain: "rocars-4e5b1.firebaseapp.com",
+  databaseURL: "https://rocars-4e5b1-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "rocars-4e5b1",
+  storageBucket: "rocars-4e5b1.firebasestorage.app",
+  messagingSenderId: "772493979421",
+  appId: "1:772493979421:web:7d1895968adbf5797bbbf4",
+  measurementId: "G-0EE5GV3MFB",
+};
+
+const ZONE = 'hub';
+const PUBLISH_INTERVAL = 0.08; // ~12 envois/seconde
+const REMOTE_COLORS = [0x3498db, 0x2ecc71, 0xf2b632, 0x9b59f5, 0xff9f1a, 0x1abc9c, 0xe06b9a];
+let myUid = null, myPseudo = 'Joueur', playerRef = null, publishTimer = 0;
+const remotePlayers = new Map(); // uid -> { group, prev, target, t }
+
+function colorForUid(uid) {
+  let h = 0;
+  for (let i = 0; i < uid.length; i++) h = (h * 31 + uid.charCodeAt(i)) >>> 0;
+  return REMOTE_COLORS[h % REMOTE_COLORS.length];
+}
+
+function buildRemoteKart(color, pseudo) {
+  const g = new THREE.Group();
+  const chassis = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.75, 3.6), mat(color, 0.45, 0.25));
+  chassis.position.y = 0.65; chassis.castShadow = true; g.add(chassis);
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.65, 1.7), mat(0xfdfdfd, 0.25, 0.1));
+  cabin.position.set(0, 1.32, -0.15); cabin.castShadow = true; g.add(cabin);
+  const wheelGeo = new THREE.CylinderGeometry(0.46, 0.46, 0.42, 12);
+  const wheelMat2 = new THREE.MeshStandardMaterial({ color: 0x1b1b22, roughness: 0.9 });
+  for (const [x, z] of [[-1.05, 1.25], [1.05, 1.25], [-1.05, -1.25], [1.05, -1.25]]) {
+    const w = new THREE.Mesh(wheelGeo, wheelMat2);
+    w.rotation.z = Math.PI / 2; w.position.set(x, 0.46, z); w.castShadow = true; g.add(w);
+  }
+  const tex = makeTextTexture(pseudo || 'Joueur', '#ffffff', 512, 128, 52, 'rgba(20,25,45,0.55)');
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+  sprite.scale.set(4.4, 1.1, 1); sprite.position.y = 2.6; g.add(sprite);
+  return g;
+}
+
+function addRemote(uid, s) {
+  if (remotePlayers.has(uid)) return moveRemote(uid, s);
+  const group = buildRemoteKart(colorForUid(uid), s.pseudo);
+  group.position.set(s.x || 0, 0, s.z || 0);
+  group.rotation.y = s.heading || 0;
+  scene.add(group);
+  remotePlayers.set(uid, {
+    group,
+    prev: { x: s.x || 0, z: s.z || 0, h: s.heading || 0 },
+    target: { x: s.x || 0, z: s.z || 0, h: s.heading || 0 },
+    t: 1,
+  });
+  updatePlayerCount();
+}
+function moveRemote(uid, s) {
+  const r = remotePlayers.get(uid);
+  if (!r) return addRemote(uid, s);
+  r.prev = { x: r.group.position.x, z: r.group.position.z, h: r.group.rotation.y };
+  r.target = { x: s.x || 0, z: s.z || 0, h: s.heading || 0 };
+  r.t = 0;
+}
+function removeRemote(uid) {
+  const r = remotePlayers.get(uid);
+  if (!r) return;
+  scene.remove(r.group);
+  remotePlayers.delete(uid);
+  updatePlayerCount();
+}
+function lerpAngle(a, b, t) {
+  let d = (b - a) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return a + d * t;
+}
+function updateRemotes(dt) {
+  for (const r of remotePlayers.values()) {
+    r.t = Math.min(r.t + dt / PUBLISH_INTERVAL, 1);
+    r.group.position.x = THREE.MathUtils.lerp(r.prev.x, r.target.x, r.t);
+    r.group.position.z = THREE.MathUtils.lerp(r.prev.z, r.target.z, r.t);
+    r.group.rotation.y = lerpAngle(r.prev.h, r.target.h, r.t);
+  }
+}
+function updatePlayerCount() {
+  document.getElementById('player-count').textContent = remotePlayers.size + 1;
+}
+
 const net = {
-  publish(_state) { /* Phase 2 */ },
-  onPlayers(_cb) { /* Phase 2 */ },
+  async connect(pseudo) {
+    myPseudo = pseudo;
+    try {
+      const app = initializeApp(firebaseConfig);
+      const auth = getAuth(app);
+      const db = getDatabase(app);
+      const cred = await signInAnonymously(auth);
+      myUid = cred.user.uid;
+      playerRef = ref(db, `zones/${ZONE}/players/${myUid}`);
+      onDisconnect(playerRef).remove();
+      set(playerRef, { pseudo, x: 0, z: 18, heading: Math.PI, speed: 0 });
+      const playersRef = ref(db, `zones/${ZONE}/players`);
+      onChildAdded(playersRef, snap => { if (snap.key !== myUid) addRemote(snap.key, snap.val() || {}); });
+      onChildChanged(playersRef, snap => { if (snap.key !== myUid) moveRemote(snap.key, snap.val() || {}); });
+      onChildRemoved(playersRef, snap => { if (snap.key !== myUid) removeRemote(snap.key); });
+      toast('Multijoueur connecté ! 🌐', 1800);
+    } catch (err) {
+      console.warn('Multijoueur indisponible :', err);
+      toast('Mode hors-ligne — multijoueur indisponible', 2600);
+    }
+  },
+  publish(dt) {
+    if (!playerRef) return;
+    publishTimer += dt;
+    if (publishTimer < PUBLISH_INTERVAL) return;
+    publishTimer = 0;
+    set(playerRef, {
+      pseudo: myPseudo,
+      x: Math.round(car.pos.x * 100) / 100,
+      z: Math.round(car.pos.z * 100) / 100,
+      heading: Math.round(car.heading * 1000) / 1000,
+      speed: Math.round(car.speed * 10) / 10,
+    });
+  },
 };
 
 // ---------- Boucle ----------
@@ -678,7 +805,8 @@ function loop() {
   updateCoins(dt, now / 1000);
   updateZones();
   updateCamera(dt);
-  net.publish({ x: car.pos.x, z: car.pos.z, heading: car.heading, speed: car.speed });
+  net.publish(dt);
+  updateRemotes(dt);
 
   speedEl.firstChild.textContent = Math.round(Math.abs(car.speed) * 3.6 / 1.4) + ' ';
   renderer.render(scene, camera);
@@ -693,6 +821,7 @@ document.getElementById('play-btn').addEventListener('click', () => {
   const pseudo = (pseudoInput.value.trim() || 'Joueur') .slice(0, 16);
   localStorage.setItem('rogames_pseudo', pseudo);
   setCarName(pseudo);
+  net.connect(pseudo);
   document.getElementById('hud-pseudo').textContent = '👤 ' + pseudo;
   startScreen.style.display = 'none';
   for (const el of document.querySelectorAll('.hud')) el.style.display = '';
