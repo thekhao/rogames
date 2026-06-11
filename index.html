@@ -944,6 +944,7 @@ function buildKartModel(color) {
 // ---------- Voiture du joueur ----------
 const kart = buildKartModel(0xe74c3c);
 const carGroup = kart.group;
+carGroup.rotation.order = 'YXZ'; // lacet (heading) puis tangage (pente)
 const carBody = kart.body;
 const wheels = kart.wheels;
 scene.add(carGroup);
@@ -989,6 +990,7 @@ function respawn() {
 }
 
 let driftAmount = 0;
+let carPitch = 0; // tangage (pentes + sauts)
 
 function updateCar(dt) {
   const up = keys['KeyW'] || keys['KeyZ'] || keys['ArrowUp'];
@@ -1075,9 +1077,22 @@ function updateCar(dt) {
     }
   }
 
+  // Tangage : le kart s'incline selon la pente du sol (ou la trajectoire en l'air)
+  let targetPitch;
+  if (car.grounded) {
+    const probe = 1.7; // sonde avant/arrière (~empattement)
+    const hF = rampHeightAt(car.pos.x + forward.x * probe, car.pos.z + forward.y * probe);
+    const hB = rampHeightAt(car.pos.x - forward.x * probe, car.pos.z - forward.y * probe);
+    targetPitch = Math.atan2(hB - hF, probe * 2);
+  } else {
+    targetPitch = THREE.MathUtils.clamp(-car.vy * 0.045, -0.5, 0.45);
+  }
+  carPitch += (targetPitch - carPitch) * Math.min(10 * dt, 1);
+
   // Application visuelle
   carGroup.position.set(car.pos.x, car.y, car.pos.z);
   carGroup.rotation.y = car.heading;
+  carGroup.rotation.x = carPitch;
 
   // Suspension dynamique + roulis dans les virages
   const t = performance.now() / 1000;
@@ -1304,6 +1319,7 @@ function buildRemoteKart(color, pseudo) {
 function addRemote(uid, s) {
   if (remotePlayers.has(uid)) return moveRemote(uid, s);
   const group = buildRemoteKart(colorForUid(uid), s.pseudo);
+  group.rotation.order = 'YXZ';
   group.position.set(s.x || 0, s.y || 0, s.z || 0);
   group.rotation.y = s.heading || 0;
   scene.add(group);
@@ -1342,6 +1358,11 @@ function updateRemotes(dt) {
     r.group.position.y = THREE.MathUtils.lerp(r.prev.y || 0, r.target.y || 0, r.t);
     r.group.position.z = THREE.MathUtils.lerp(r.prev.z, r.target.z, r.t);
     r.group.rotation.y = lerpAngle(r.prev.h, r.target.h, r.t);
+    // Tangage des joueurs distants déduit de leur trajectoire verticale
+    const dyR = (r.target.y || 0) - (r.prev.y || 0);
+    const dhR = Math.hypot(r.target.x - r.prev.x, r.target.z - r.prev.z);
+    const pitchR = dhR > 0.02 ? THREE.MathUtils.clamp(Math.atan2(-dyR, dhR), -0.55, 0.55) : 0;
+    r.group.rotation.x += (pitchR - r.group.rotation.x) * Math.min(6 * dt, 1);
     const wlist = r.group.userData.wheels;
     if (wlist) {
       const v = Math.hypot(r.target.x - r.prev.x, r.target.z - r.prev.z) / PUBLISH_INTERVAL;
